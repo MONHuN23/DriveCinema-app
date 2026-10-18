@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <exclude domain="file" path="auth_credentials.enc" />
+    <exclude domain="sharedpref" path="drivecinema_local_storage.xml" />
+</full-backup-content>

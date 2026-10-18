@@ -1,0 +1,19 @@
+*.iml
+.gradle
+/local.properties
+/.idea
+.DS_Store
+/build
+*/build
+captures
+.externalNativeBuild
+.cxx
+*.apk
+*.aab
+output-metadata.json
+.superpowers
+.kotlin
+
+# Release signing keys: never commit them
+*.jks
+*.keystore
