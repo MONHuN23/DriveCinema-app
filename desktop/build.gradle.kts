@@ -39,9 +39,9 @@ dependencies {
   implementation(compose.material3)
   // Android has org.json built in; on the desktop it is a normal dependency (used by :shared).
   implementation(libs.org.json)
-  // libsecret (Linux keyring) now, libVLC (vlcj) in F.7
+  // libsecret (Linux keyring), Windows Credential Manager (Advapi32), libVLC (vlcj)
   implementation(libs.jna)
-  // Video player: libVLC through vlcj (VLC 3.x installed on Linux, bundled on Windows in F.11)
+  // Video player: libVLC through vlcj (VLC 3.x installed by the user: apt/dnf on Linux, winget or videolan.org on Windows)
   implementation(libs.vlcj)
   // SQLite for the shared Room database on the desktop
   implementation(libs.sqlite.bundled)
@@ -56,9 +56,9 @@ compose.desktop {
     mainClass = "com.drivecinema.desktop.MainKt"
 
     nativeDistributions {
-      targetFormats(TargetFormat.Deb, TargetFormat.Msi)
+      targetFormats(TargetFormat.Deb, TargetFormat.Rpm, TargetFormat.Msi)
       packageName = "DriveCinema"
-      packageVersion = "1.0.0"
+      packageVersion = "1.1.0"
       description = "Stream your movie and TV library from Google Drive"
       vendor = "DriveCinema"
       // jlink keeps only these JDK modules: Swing/AWT (Compose), the loopback sign-in/stream servers,
@@ -69,12 +69,27 @@ compose.desktop {
       )
 
       linux {
-        // Installs to /opt/drivecinema with a menu entry. VLC is not bundled on Linux: `sudo apt install vlc`.
+        // .deb and .rpm install to /opt/drivecinema with a menu entry. VLC is not bundled on Linux (apt: vlc; Fedora: vlc from RPM Fusion).
+        // The .rpm needs `rpmbuild` on the build machine (Ubuntu: `sudo apt install rpm`).
         packageName = "drivecinema"
         menuGroup = "AudioVideo;Video"
         appCategory = "video"
         shortcut = true
         iconFile.set(project.file("icons/drivecinema.png"))
+      }
+
+      windows {
+        // .msi, built on Windows only (`.\gradlew.bat :desktop:packageMsi`). Per-user install into %LOCALAPPDATA%,
+        // so no admin rights; app data stays in %APPDATA%\DriveCinema and survives an uninstall. VLC is not bundled:
+        // the player offers "Install VLC" (winget) or the download page (F.11 decision, user 2026-10-19).
+        // Never change upgradeUuid: it is what lets a newer .msi replace the installed one instead of adding a second.
+        upgradeUuid = "a016f5b8-2f1d-43b9-ad15-152e57c30f22"
+        perUserInstall = true
+        dirChooser = true
+        menu = true
+        menuGroup = "DriveCinema"
+        shortcut = true
+        iconFile.set(project.file("icons/drivecinema.ico"))
       }
     }
   }

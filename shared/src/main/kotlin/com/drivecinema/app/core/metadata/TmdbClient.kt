@@ -169,87 +169,85 @@ class TmdbClient(
         }
     }
 
-    suspend fun searchSeries(title: String): Result<TmdbMetadata?> = withContext(Dispatchers.IO) {
+    /**
+     * Searches TMDB for a series. [year] (from the folder name, e.g. "Ted (2024)") narrows the search to shows
+     * that first aired that year; when nothing matches, the search runs again without it. From the results,
+     * [TmdbSeriesMatcher] prefers an exact name and year over TMDB's popularity order, so "Ted (2024)" finds
+     * the 2024 show "ted" rather than the more popular "Ted Lasso".
+     */
+    suspend fun searchSeries(title: String, year: Int? = null): Result<TmdbMetadata?> = withContext(Dispatchers.IO) {
         val effectiveKey = apiKey?.ifEmpty { null }
         if (effectiveKey == null) {
             AppLog.w(TAG, "searchSeries skipped: TMDB API key is not configured")
             return@withContext Result.success(null)
         }
-
-        val isBearer = isBearerToken(effectiveKey)
-        val urlBuilder = "$baseUrl/search/tv".toHttpUrl().newBuilder()
-            .addQueryParameter("query", title)
-
-        if (!isBearer) {
-            urlBuilder.addQueryParameter("api_key", effectiveKey)
-        }
-
-        val requestBuilder = Request.Builder()
-            .url(urlBuilder.build())
-            .get()
-
-        if (isBearer) {
-            requestBuilder.addHeader("Authorization", "Bearer $effectiveKey")
-        }
-
-        val request = requestBuilder.build()
+        val validYear = year?.takeIf { it > 1900 }
 
         return@withContext try {
-            httpClient.newCall(request).execute().use { response ->
-                AppLog.d(TAG, "searchSeries: endpoint=/search/tv, query='$title', status=${response.code}")
-                if (!response.isSuccessful) {
-                    return@withContext Result.failure(IOException("TMDB search tv failed: ${response.code}"))
-                }
-                val body = response.body?.string() ?: ""
-                val json = JSONObject(body)
-                val results = json.optJSONArray("results")
-                if (results == null || results.length() == 0) {
-                    return@withContext Result.success(null)
-                }
-
-                val first = results.getJSONObject(0)
-                val id = first.getInt("id")
-                val showTitle = first.optString("name", title)
-                val overview = first.optString("overview", "").ifEmpty { null }
-                val poster = first.optString("poster_path", "").ifEmpty { null }
-                val backdrop = first.optString("backdrop_path", "").ifEmpty { null }
-                val firstAirDate = first.optString("first_air_date", "")
-                val year = firstAirDate.take(4).toIntOrNull()
-
-                val genreIds = mutableListOf<Int>()
-                val genreArray = first.optJSONArray("genre_ids")
-                if (genreArray != null) {
-                    for (i in 0 until genreArray.length()) {
-                        genreIds.add(genreArray.getInt(i))
-                    }
-                }
-                val genres = TmdbGenreLookup.resolveGenres(genreIds)
-
-                val voteAvg = first.optDouble("vote_average", Double.NaN).let {
-                    if (it.isNaN() || it == 0.0) null else it
-                }
-                val voteCount = first.optInt("vote_count", 0).let {
-                    if (it == 0) null else it
-                }
-
-                Result.success(
-                    TmdbMetadata(
-                        tmdbId = id,
-                        title = showTitle,
-                        overview = overview,
-                        posterPath = poster,
-                        backdropPath = backdrop,
-                        year = year,
-                        genres = genres,
-                        voteAverage = voteAvg,
-                        voteCount = voteCount
-                    )
+            var results = fetchSeriesResults(title, validYear, effectiveKey)
+            if (results.isEmpty() && validYear != null) {
+                results = fetchSeriesResults(title, null, effectiveKey)
+            }
+            val candidates = results.map { obj ->
+                TmdbSeriesMatcher.Candidate(
+                    name = obj.optString("name", ""),
+                    originalName = obj.optString("original_name", ""),
+                    year = obj.optString("first_air_date", "").take(4).toIntOrNull()
                 )
             }
+            val index = TmdbSeriesMatcher.pick(candidates, title, validYear)
+                ?: return@withContext Result.success(null)
+            Result.success(parseSeries(results[index], title))
         } catch (e: Exception) {
             AppLog.e(TAG, "searchSeries failed for '$title'", e)
             Result.failure(e)
         }
+    }
+
+    /** One `/search/tv` request; [year] becomes `first_air_date_year`. Throws on an HTTP error. */
+    private fun fetchSeriesResults(title: String, year: Int?, key: String): List<JSONObject> {
+        val isBearer = isBearerToken(key)
+        val urlBuilder = "$baseUrl/search/tv".toHttpUrl().newBuilder()
+            .addQueryParameter("query", title)
+        if (!isBearer) {
+            urlBuilder.addQueryParameter("api_key", key)
+        }
+        if (year != null) {
+            urlBuilder.addQueryParameter("first_air_date_year", year.toString())
+        }
+        val requestBuilder = Request.Builder().url(urlBuilder.build()).get()
+        if (isBearer) {
+            requestBuilder.addHeader("Authorization", "Bearer $key")
+        }
+        httpClient.newCall(requestBuilder.build()).execute().use { response ->
+            AppLog.d(TAG, "searchSeries: endpoint=/search/tv, query='$title', year=$year, status=${response.code}")
+            if (!response.isSuccessful) {
+                throw IOException("TMDB search tv failed: ${response.code}")
+            }
+            val results = JSONObject(response.body?.string() ?: "").optJSONArray("results") ?: return emptyList()
+            return (0 until results.length()).map { results.getJSONObject(it) }
+        }
+    }
+
+    private fun parseSeries(obj: JSONObject, fallbackTitle: String): TmdbMetadata {
+        val genreIds = mutableListOf<Int>()
+        val genreArray = obj.optJSONArray("genre_ids")
+        if (genreArray != null) {
+            for (i in 0 until genreArray.length()) {
+                genreIds.add(genreArray.getInt(i))
+            }
+        }
+        return TmdbMetadata(
+            tmdbId = obj.getInt("id"),
+            title = obj.optString("name", fallbackTitle),
+            overview = obj.optString("overview", "").ifEmpty { null },
+            posterPath = obj.optString("poster_path", "").ifEmpty { null },
+            backdropPath = obj.optString("backdrop_path", "").ifEmpty { null },
+            year = obj.optString("first_air_date", "").take(4).toIntOrNull(),
+            genres = TmdbGenreLookup.resolveGenres(genreIds),
+            voteAverage = obj.optDouble("vote_average", Double.NaN).let { if (it.isNaN() || it == 0.0) null else it },
+            voteCount = obj.optInt("vote_count", 0).let { if (it == 0) null else it }
+        )
     }
 
     suspend fun getSeasonEpisodes(tvId: Int, seasonNumber: Int): Result<List<TmdbEpisode>> = withContext(Dispatchers.IO) {

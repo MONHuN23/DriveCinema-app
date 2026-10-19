@@ -9,15 +9,24 @@ class VlcInstallerTest {
     @Test
     fun aptLinuxInstallsInPlaceWithPasswordDialog() {
         val plan = VlcInstaller.plan("Linux", onPath = { it == "pkexec" || it == "apt-get" })
-        assertEquals(VlcInstaller.Plan.Install(listOf("pkexec", "apt-get", "install", "-y", "vlc")), plan)
+        assertEquals(VlcInstaller.Plan.Install(listOf("pkexec", "apt-get", "install", "-y", "vlc"), VlcInstaller.APT_HINT), plan)
     }
 
     @Test
     fun otherSystemsOpenTheDownloadPage() {
         val page = VlcInstaller.Plan.OpenDownloadPage("https://www.videolan.org/vlc/")
-        assertEquals(page, VlcInstaller.plan("Windows 11", onPath = { true }))
-        assertEquals(page, VlcInstaller.plan("Linux", onPath = { it == "pkexec" })) // Fedora etc.: no apt-get
+        assertEquals(page, VlcInstaller.plan("Mac OS X", onPath = { true }))
+        assertEquals(page, VlcInstaller.plan("Windows 11", onPath = { false })) // no winget
+        assertEquals(page, VlcInstaller.plan("Linux", onPath = { it == "pkexec" })) // neither apt-get nor dnf
         assertEquals(page, VlcInstaller.plan("Linux", onPath = { it == "apt-get" })) // no password dialog helper
+    }
+
+    @Test
+    fun fedoraInstallsWithDnfAndExplainsRpmFusionOnFailure() {
+        val plan = VlcInstaller.plan("Linux", onPath = { it == "pkexec" || it == "dnf" })
+        assertEquals(VlcInstaller.Plan.Install(listOf("pkexec", "dnf", "install", "-y", "vlc"), VlcInstaller.DNF_HINT), plan)
+        assertTrue(VlcInstaller.DNF_HINT.contains("RPM Fusion"))
+        assertEquals(VlcInstaller.Result.Failed("dnf exited with code 1"), VlcInstaller.install(VlcInstaller.DNF_COMMAND) { 1 to "" })
     }
 
     @Test
@@ -43,5 +52,36 @@ class VlcInstallerTest {
     fun missingProgramIsAFailureNotACrash() {
         val result = VlcInstaller.install(listOf("pkexec")) { throw java.io.IOException("Cannot run program \"pkexec\"") }
         assertTrue(result is VlcInstaller.Result.Failed)
+    }
+
+    @Test
+    fun windowsInstallsWithWingetBehindTheWindowsPrompt() {
+        val plan = VlcInstaller.plan("Windows 11", onPath = { it == "winget.exe" })
+        assertEquals(
+            VlcInstaller.Plan.Install(
+                listOf(
+                    "winget", "install", "--id", "VideoLAN.VLC", "--exact", "--silent",
+                    "--accept-package-agreements", "--accept-source-agreements"
+                ),
+                VlcInstaller.WINGET_HINT,
+                VlcInstaller.WINDOWS_PERMISSION_NOTE
+            ),
+            plan
+        )
+        // A Linux tool on a Windows PATH (e.g. Git Bash) never picks apt.
+        assertEquals(plan, VlcInstaller.plan("Windows 10", onPath = { it == "winget.exe" || it == "pkexec" || it == "apt-get" }))
+    }
+
+    @Test
+    fun wingetFailuresAreNeverReadAsPkexecCancel() {
+        val cmd = VlcInstaller.WINGET_COMMAND
+        assertEquals(VlcInstaller.Result.Installed, VlcInstaller.install(cmd) { 0 to "Successfully installed" })
+        assertEquals(VlcInstaller.Result.Failed("winget exited with code 127"), VlcInstaller.install(cmd) { 127 to "" })
+        // Declining the Windows prompt: the installer exits with 1223 and winget prints why.
+        val output = "Found VLC media player [VideoLAN.VLC]\nInstaller failed with exit code: 1223\n"
+        assertEquals(
+            VlcInstaller.Result.Failed("Found VLC media player [VideoLAN.VLC]\nInstaller failed with exit code: 1223"),
+            VlcInstaller.install(cmd) { -1978335226 to output }
+        )
     }
 }

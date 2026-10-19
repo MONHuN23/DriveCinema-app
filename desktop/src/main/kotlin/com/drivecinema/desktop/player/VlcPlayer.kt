@@ -10,6 +10,7 @@ import org.jetbrains.skia.Bitmap
 import org.jetbrains.skia.ColorAlphaType
 import org.jetbrains.skia.ColorType
 import org.jetbrains.skia.ImageInfo
+import uk.co.caprica.vlcj.binding.support.runtime.RuntimeUtil
 import uk.co.caprica.vlcj.factory.MediaPlayerFactory
 import uk.co.caprica.vlcj.factory.discovery.NativeDiscovery
 import uk.co.caprica.vlcj.media.TrackType
@@ -42,13 +43,44 @@ object VlcAvailability {
     @Synchronized
     fun recheck(): Boolean {
         val result = try {
-            NativeDiscovery().discover()
+            if (RuntimeUtil.isWindows()) {
+                // vlcj's own search is recursive and takes about a minute on Windows without VLC (F.11).
+                val folder = WindowsVlcLocator.locate()
+                folder != null && NativeDiscovery(SingleFolderWindowsDiscoveryStrategy(folder)).discover()
+            } else {
+                NativeDiscovery().discover()
+            }
         } catch (e: Throwable) {
             AppLog.w("VlcPlayer", "libVLC discovery failed: ${e.message}")
             false
         }
         found = result
         return result
+    }
+
+    @Volatile
+    private var warmedUp = false
+
+    /**
+     * [isAvailable], and on the first success starts libVLC once and closes it again. The first start loads every
+     * plugin (slow right after installing VLC on Windows); doing it here, off the UI thread, keeps the player
+     * screen's own start quick (F.11: the window froze on a black screen). Blocking: call off the UI thread.
+     */
+    fun prepare(): Boolean {
+        if (!isAvailable) return false
+        if (!warmedUp) {
+            synchronized(this) {
+                if (!warmedUp) {
+                    try {
+                        MediaPlayerFactory("--no-video-title-show", "--quiet").release()
+                    } catch (e: Throwable) {
+                        AppLog.w("VlcPlayer", "libVLC warm-up failed: ${e.message}")
+                    }
+                    warmedUp = true
+                }
+            }
+        }
+        return true
     }
 }
 

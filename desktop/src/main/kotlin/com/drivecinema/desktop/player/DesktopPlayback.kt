@@ -5,6 +5,9 @@ import com.drivecinema.app.core.database.entity.SourceKind
 import com.drivecinema.app.core.player.NextEpisode
 import com.drivecinema.app.core.player.PlaybackSelector
 import com.drivecinema.desktop.ui.PlaybackRequest
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /** What the player screen opens for a catalog title, and the key its progress is saved under. */
 data class ResolvedRequest(val request: PlaybackRequest, val progressKey: String?)
@@ -12,7 +15,10 @@ data class ResolvedRequest(val request: PlaybackRequest, val progressKey: String
 /** Turns "play this title" into a stream URL with the same copy/resume rules as Android. */
 class DesktopPlayback(
     val database: DriveCinemaDatabase,
-    private val vlcAvailable: () -> Boolean = { VlcAvailability.isAvailable }
+    private val vlcAvailable: () -> Boolean = { VlcAvailability.prepare() },
+    // resolve() is called from Compose (the UI thread); the libVLC search blocks, and on Windows without VLC it is
+    // slow enough to freeze the window (F.11), so it never runs on the caller's thread.
+    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO
 ) {
     private val selector = PlaybackSelector(database.mediaSourceDao())
 
@@ -26,7 +32,7 @@ class DesktopPlayback(
     }
 
     suspend fun resolve(itemId: String, fromStart: Boolean, proxy: DriveStreamProxy?): ResolvedRequest {
-        if (!vlcAvailable()) return ResolvedRequest(PlaybackRequest.VlcMissing, null)
+        if (!withContext(ioDispatcher) { vlcAvailable() }) return ResolvedRequest(PlaybackRequest.VlcMissing, null)
         val copy = selector.select(itemId) ?: return unavailable("This title is not available right now. Refresh the library and try again.")
         return when (copy.kind) {
             SourceKind.DRIVE -> {

@@ -197,7 +197,7 @@ class DriveLibrarySyncEngine(
                 val noMatchKey = "series|${series.id}|${series.title}"
                 if (noMatchKey in tmdbNoMatch) continue
                 try {
-                    val searchRes = tmdb.searchSeries(series.title)
+                    val searchRes = tmdb.searchSeries(series.title, series.year)
                     val meta = searchRes.getOrNull()
                     if (searchRes.isSuccess && meta == null) tmdbNoMatch += noMatchKey
                     if (meta != null) {

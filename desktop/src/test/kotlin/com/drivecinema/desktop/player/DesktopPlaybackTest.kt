@@ -44,6 +44,17 @@ class DesktopPlaybackTest {
     private fun playback(vlc: Boolean = true) = DesktopPlayback(db, vlcAvailable = { vlc })
 
     @Test
+    fun vlcSearchNeverRunsOnTheCallersThread() = runBlocking {
+        // Regression (F.11): the search ran on the Compose UI thread and froze the window on Windows.
+        val caller = Thread.currentThread()
+        var checkedOn: Thread? = null
+        val playback = DesktopPlayback(db, vlcAvailable = { checkedOn = Thread.currentThread(); false })
+
+        assertEquals(PlaybackRequest.VlcMissing, playback.resolve("drive-1", fromStart = false, proxy).request)
+        assertTrue(checkedOn != null && checkedOn !== caller)
+    }
+
+    @Test
     fun driveTitleStreamsThroughTheProxyFromTheResumePoint() = runBlocking {
         db.playbackProgressDao().saveProgress(PlaybackProgressEntity("drive-1", 1_500_000, 7_200_000))
 

@@ -1,7 +1,7 @@
 # DriveCinema
 
 **Your own Netflix-style player for the films and series in your Google Drive.** Android phone, Android TV and
-desktop (Linux; Windows planned).
+desktop (Linux and Windows).
 
 You put your videos in a Google Drive folder; DriveCinema turns them into a library with posters, descriptions,
 seasons and episodes, and plays them. There is no server and no account other than your own Google account: the
@@ -18,6 +18,7 @@ apps talk directly to Google Drive (read-only) and to TMDB for artwork.
 - **Android TV**: remote-friendly 10-foot UI. Sign in on the TV by **pairing with your phone** (PIN, local network
   only), no typing.
 - Audio track choice; a clear warning when a device can't decode a video or audio format.
+- **Desktop app** for Linux (`.deb`) and Windows (`.msi` installer, no admin rights needed).
 - Desktop: local folders as an extra source, merged with the Drive library (phone storage folders: experimental).
 - Read-only: DriveCinema never changes, moves or uploads your files (the planned download-folder upload will be
   opt-in).
@@ -37,7 +38,6 @@ Planned, not built yet, in no fixed order:
   uploaded to the right Drive folder (Films / Series / Season) automatically.
 - **Stream from the desktop's local folders:** phones and TVs at home play videos stored on your computer directly
   over Wi-Fi, without uploading them to Drive first.
-- **Windows desktop app** with an installer.
 
 ## 1. Prepare your Google Drive
 
@@ -69,7 +69,7 @@ DriveCinema reads Drive with Google's `drive.readonly` permission. Google treats
 the app isn't verified by Google, and you'll see a **"Google hasn't verified this app"** screen when you sign in:
 choose **Advanced → Go to DriveCinema** to continue. DriveCinema only ever reads your Drive.
 
-- **Ready-made downloads** (APK, `.deb`) use the developer's Google project. It is unverified, so Google allows
+- **Ready-made downloads** (APK, `.deb`, `.msi`) use the developer's Google project. It is unverified, so Google allows
   **at most 100 users in total** on it. If sign-in says the limit is reached, build DriveCinema with your own keys
   (below): it takes about 15 minutes and then nothing depends on anyone else's project.
 
@@ -98,9 +98,18 @@ sudo apt install ./drivecinema_<version>_amd64.deb
 ```
 VLC is required for playback. If it's missing, the app offers to install it.
 
-### Windows
-Planned (an `.msi` installer). Windows will show **"Windows protected your PC"** for the unsigned installer:
-**More info → Run anyway**.
+### Windows 10 / 11 (64-bit)
+1. Download `DriveCinema-<version>.msi` from the [Releases](../../releases) page.
+2. Double-click it. It installs for your user only, so no admin rights are needed, and adds a Start-menu entry and a
+   desktop shortcut. The installer isn't code-signed, so Windows shows **"Windows protected your PC"**:
+   **More info → Run anyway**.
+3. Start DriveCinema → **Sign in with Google**. Your sign-in is kept in Windows Credential Manager.
+
+A newer `.msi` updates the installed app. Uninstalling (Settings → Apps) keeps your watch history and sign-in, so a
+reinstall picks them up.
+
+VLC (64-bit) is required for playback. If it's missing, the app offers to install it with `winget`, or you can get
+it from [videolan.org](https://www.videolan.org/vlc/).
 
 ## Build with your own keys
 
@@ -168,6 +177,7 @@ Requirements: JDK 17 and the Android SDK (API 36); Android Studio brings both.
   ```bash
   sudo apt install ./desktop/build/compose/binaries/main/deb/*.deb
   ```
+  On Windows: `.\gradlew.bat :desktop:packageMsi`, then run the `.msi` from `desktop\build\compose\binaries\main\msi\`.
   The Desktop client ID and secret from `local.properties` are built into the package.
 - **Unit tests:**
   ```bash

@@ -397,7 +397,7 @@ private fun PlayerMessage(title: String, message: String, onBack: () -> Unit) {
 
 private const val VLC_MISSING_TEXT = "VLC is not installed, so DriveCinema can't play videos yet."
 
-/** VLC missing: install it in place (apt, after the system password dialog) or open the download page. */
+/** VLC missing: install it in place (apt/dnf after the password dialog, winget after the Windows prompt) or open the download page. */
 @Composable
 private fun VlcMissingMessage(title: String, onRetry: () -> Unit, onBack: () -> Unit) {
     val plan = remember { VlcInstaller.plan() }
@@ -410,8 +410,8 @@ private fun VlcMissingMessage(title: String, onRetry: () -> Unit, onBack: () -> 
             Text(title, color = DesktopColors.TextPrimary, fontSize = 18.sp, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center)
             Spacer(Modifier.height(12.dp))
             val prompt = when (plan) {
-                is VlcInstaller.Plan.Install -> "$VLC_MISSING_TEXT\n\nInstall VLC now? Your computer will ask for your password."
-                is VlcInstaller.Plan.OpenDownloadPage -> "$VLC_MISSING_TEXT\n\nDownload VLC from videolan.org, install it, then restart DriveCinema."
+                is VlcInstaller.Plan.Install -> "$VLC_MISSING_TEXT\n\nInstall VLC now? ${plan.confirmNote}"
+                is VlcInstaller.Plan.OpenDownloadPage -> "$VLC_MISSING_TEXT\n\nDownload VLC (64-bit) from videolan.org, install it, then restart DriveCinema."
             }
             Text(prompt, color = DesktopColors.TextSecondary, textAlign = TextAlign.Center)
             status?.let {
@@ -422,7 +422,7 @@ private fun VlcMissingMessage(title: String, onRetry: () -> Unit, onBack: () -> 
             if (installing) {
                 CircularProgressIndicator(color = DesktopColors.Accent)
                 Spacer(Modifier.height(8.dp))
-                Text("Installing VLC…", color = DesktopColors.TextSecondary)
+                Text("Installing VLC… This can take a few minutes.", color = DesktopColors.TextSecondary)
             } else {
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     OutlinedButton(onClick = onBack) { Text("Back", color = DesktopColors.TextPrimary) }
@@ -440,7 +440,7 @@ private fun VlcMissingMessage(title: String, onRetry: () -> Unit, onBack: () -> 
                                             if (found) null else "VLC is installed. Restart DriveCinema to start playing."
                                         VlcInstaller.Result.Cancelled -> "Installation cancelled. Nothing was changed."
                                         is VlcInstaller.Result.Failed ->
-                                            "Installing VLC failed:\n${result.detail}\n\nYou can also run in a terminal: sudo apt install vlc"
+                                            "Installing VLC failed:\n${result.detail}\n\n${plan.manualHint}"
                                     }
                                     if (found) onRetry()
                                 }
