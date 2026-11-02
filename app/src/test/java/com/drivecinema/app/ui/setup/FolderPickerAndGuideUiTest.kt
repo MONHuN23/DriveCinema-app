@@ -4,7 +4,10 @@ import com.drivecinema.app.core.model.FolderPickerSections
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onNodeWithContentDescription
+import com.drivecinema.app.theme.DriveCinemaTheme
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToNode
@@ -59,8 +62,10 @@ class FolderPickerAndGuideUiTest {
         val list = composeTestRule.onNode(hasScrollToNodeAction())
         composeTestRule.onNodeWithText("YOUR DRIVE").assertIsDisplayed()
         composeTestRule.onAllNodesWithText("ID:", substring = true).assertCountEquals(0)
-        list.performScrollToNode(hasText("SHARED WITH YOU"))
-        composeTestRule.onNodeWithText("SHARED WITH YOU").assertIsDisplayed()
+        // The phone folds "Shared with you" away while there are folders of your own; one tap opens it.
+        list.performScrollToNode(hasText("Shared with you"))
+        composeTestRule.onAllNodesWithText("Shared by Janos").assertCountEquals(0)
+        composeTestRule.onNodeWithText("Shared with you").performClick()
         list.performScrollToNode(hasText("Shared by Janos"))
         composeTestRule.onNodeWithText("Shared by Janos").assertIsDisplayed()
         assertTrue(FolderPickerSections.from(folders).let { s -> (s.mine + s.shared).count { FolderPickerSections.isRecommended(it) } } == 2)
@@ -86,36 +91,37 @@ class FolderPickerAndGuideUiTest {
 
         composeTestRule.onNodeWithText("No folders found").assertIsDisplayed()
         composeTestRule.onNodeWithText("How to set up folders").performClick()
-        composeTestRule.onNodeWithText("? Setup guide").performClick()
+        composeTestRule.onNodeWithContentDescription("More options").performClick()
+        composeTestRule.onNodeWithText("Setup guide").performClick()
         assertEquals(2, guideOpened)
     }
 
+    /** The TV keeps its own picker: the action row above the list, the remote starting on the first folder. */
     @Test
-    fun setupGuideShowsEverySectionAndGoesBack() {
-        var back = false
-        composeTestRule.setContent { SetupGuideScreen(onBackClick = { back = true }) }
-
-        SetupGuideContent.sections.forEach { section ->
-            composeTestRule.onNode(hasScrollToNodeAction()).performScrollToNode(hasText(section.title))
-            composeTestRule.onNodeWithText(section.title).assertIsDisplayed()
-        }
-        composeTestRule.onNode(hasScrollToNodeAction()).performScrollToNode(hasText("← Back"))
-        composeTestRule.onNodeWithText("← Back").performClick()
-        assertTrue(back)
-    }
-
-    @Test
-    fun accountDialogOpensTheSetupGuide() {
-        var opened = false
+    fun theTvKeepsItsActionRowAndStartsOnTheFirstFolder() {
+        var guideOpened = 0
         composeTestRule.setContent {
-            AccountDialog(
-                account = com.drivecinema.app.ui.mobile.home.AccountUiState(isConnected = true),
-                onOpenGuideClick = { opened = true },
-                onDismissRequest = {}
-            )
+            DriveCinemaTheme(isTv = true) {
+                FolderPickerScreen(
+                    folders = folders,
+                    isLoading = false,
+                    isValidating = false,
+                    onFolderSelected = {},
+                    onRefreshClick = {},
+                    onSignOutClick = {},
+                    onOpenGuideClick = { guideOpened++ }
+                )
+            }
         }
+        composeTestRule.waitForIdle()
 
-        composeTestRule.onNodeWithText("Setup Guide").performClick()
-        assertTrue(opened)
+        composeTestRule.onAllNodesWithContentDescription("More options").assertCountEquals(0)
+        composeTestRule.onNodeWithText("Sign Out").assertExists()
+        composeTestRule.onNodeWithText("? Setup guide").performClick()
+        assertEquals(1, guideOpened)
     }
+
+    // The Help Center itself (the setup guide before Task P.4) is tested in ui/help/HelpScreensTest and
+    // TvHelpFocusTest; the picker's link opening "Set up your folders" in PredictiveBackNavigationTest. Settings' Help
+    // Center row (the Account popup's "Setup Guide" before Task P.2) in SettingsScreenTest.sourcesAndHelpRowsOpenTheirScreens.
 }

@@ -1,5 +1,7 @@
 package com.drivecinema.app.ui.player
 
+import com.drivecinema.app.ui.icons.AppIcons
+import androidx.compose.material3.Icon
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -14,13 +16,15 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
@@ -45,6 +49,8 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.Player
 import androidx.media3.common.Tracks
 import androidx.media3.ui.PlayerView
+import com.drivecinema.app.core.skipintro.IntroTimes
+import com.drivecinema.app.core.skipintro.SkipIntroWindow
 import kotlinx.coroutines.delay
 
 @Composable
@@ -54,10 +60,24 @@ fun MinimalPlayerView(
     onBackPressed: () -> Unit,
     nextEpisodeTitle: String? = null,
     onNextEpisodeClick: () -> Unit = {},
+    /** The bottom row's Previous episode button shows when this is set. */
+    previousEpisodeTitle: String? = null,
+    onPreviousEpisodeClick: () -> Unit = {},
+    /** Details opens the film's or the series' page; null hides it. */
+    onDetailsClick: (() -> Unit)? = null,
     controlsVisible: Boolean? = null,
     onControlsVisibilityChange: ((Boolean) -> Unit)? = null,
     lastInteractionTimeMs: Long = 0L,
     onUserInteraction: (() -> Unit)? = null,
+    /** Task K.1: larger subtitle style on TV. */
+    isTv: Boolean = false,
+    /** Milestone O: the playing copy's intro, when known; the button shows inside it unless hidden with Back. */
+    skipIntro: IntroTimes? = null,
+    skipIntroDismissed: Boolean = false,
+    onSkipIntro: () -> Unit = {},
+    onHideSkipIntro: () -> Unit = {},
+    /** Task P.8: the open track panel; `PlayerActivity` holds it, so the remote's Back can close it. */
+    trackPanel: MutableState<TrackPanelKind?> = remember { mutableStateOf(null) },
     modifier: Modifier = Modifier
 ) {
     var internalControlsVisible by remember { mutableStateOf(true) }
@@ -76,9 +96,12 @@ fun MinimalPlayerView(
     var currentPositionMs by remember { mutableLongStateOf(player.currentPosition.coerceAtLeast(0L)) }
     var bufferedPositionMs by remember { mutableLongStateOf(player.bufferedPosition.coerceAtLeast(0L)) }
     var durationMs by remember { mutableLongStateOf(player.duration.coerceAtLeast(0L)) }
-    var audioTracks by remember { mutableStateOf<List<AudioTrackInfo>>(emptyList()) }
-    var selectedAudioTrackIndex by remember { mutableIntStateOf(0) }
-    var showAudioTrackDialog by remember { mutableStateOf(false) }
+    var audioTracks by remember { mutableStateOf(AudioTrackHelper.extractAudioTracks(player.currentTracks)) }
+    var subtitleTracks by remember { mutableStateOf(SubtitleTrackHelper.extractSubtitleTracks(player.currentTracks)) }
+    var subtitlesOff by remember { mutableStateOf(SubtitleTrackHelper.isOff(player, subtitleTracks)) }
+    val openPanel = trackPanel.value
+    // The panel whose button gets the focus back when it closes.
+    var panelOpenedFrom by remember { mutableStateOf<TrackPanelKind?>(null) }
     var unsupportedAudioMessage by remember { mutableStateOf<String?>(null) }
     var unsupportedVideoMessage by remember { mutableStateOf<String?>(null) }
 
@@ -121,9 +144,10 @@ fun MinimalPlayerView(
             override fun onTracksChanged(tracks: Tracks) {
                 unsupportedVideoMessage = VideoTrackHelper.unsupportedVideoMessage(tracks)
                 audioTracks = AudioTrackHelper.extractAudioTracks(tracks)
+                subtitleTracks = SubtitleTrackHelper.extractSubtitleTracks(tracks)
+                subtitlesOff = SubtitleTrackHelper.isOff(player, subtitleTracks)
                 when (val result = AudioTrackHelper.resolveAudioTracks(player, tracks)) {
                     is AudioSelectionResult.SupportedTrackSelected -> {
-                        selectedAudioTrackIndex = result.track.index
                         unsupportedAudioMessage = null
                     }
                     is AudioSelectionResult.NoSupportedTrack -> {
@@ -152,9 +176,9 @@ fun MinimalPlayerView(
         }
     }
 
-    // Auto-hide controls timer (4 seconds of inactivity while playing)
-    LaunchedEffect(effectiveControlsVisible, isPlaying, isEnded, lastInteractionTimeMs) {
-        if (effectiveControlsVisible && isPlaying && !isEnded) {
+    // Auto-hide controls timer (4 seconds of inactivity while playing); it waits while a track panel is open.
+    LaunchedEffect(effectiveControlsVisible, isPlaying, isEnded, lastInteractionTimeMs, openPanel) {
+        if (effectiveControlsVisible && isPlaying && !isEnded && openPanel == null) {
             delay(4000)
             updateControlsVisible(false)
         }
@@ -165,13 +189,53 @@ fun MinimalPlayerView(
         updateControlsVisible(false)
     }
 
+    val skipIntroVisible = skipIntro != null && !isEnded && errorMessage == null && openPanel == null &&
+        SkipIntroWindow.isVisible(skipIntro, currentPositionMs, skipIntroDismissed)
+
+    // With the controls hidden, Back hides the Skip intro button first (the TV's Back key is handled in PlayerActivity).
+    androidx.activity.compose.BackHandler(enabled = !effectiveControlsVisible && skipIntroVisible) {
+        onHideSkipIntro()
+    }
+
     val playPauseFocusRequester = remember { androidx.compose.ui.focus.FocusRequester() }
+    val skipIntroFocusRequester = remember { androidx.compose.ui.focus.FocusRequester() }
+    val timelineFocusRequester = remember { androidx.compose.ui.focus.FocusRequester() }
+    val subtitleFocusRequester = remember { androidx.compose.ui.focus.FocusRequester() }
+    val audioFocusRequester = remember { androidx.compose.ui.focus.FocusRequester() }
+
+    val openTrackPanel: (TrackPanelKind) -> Unit = { kind ->
+        onUserInteraction?.invoke()
+        panelOpenedFrom = kind
+        trackPanel.value = kind
+    }
+    val closeTrackPanel: () -> Unit = {
+        onUserInteraction?.invoke()
+        trackPanel.value = null
+    }
+
+    // Task P.8: Back (the phone's gesture; the TV's key in PlayerActivity) closes an open track panel first.
+    androidx.activity.compose.BackHandler(enabled = openPanel != null, onBack = closeTrackPanel)
+
+    // TV: once the panel has closed and the controls are back, its button takes the focus again.
+    LaunchedEffect(openPanel) {
+        val from = panelOpenedFrom
+        if (openPanel != null || from == null) return@LaunchedEffect
+        panelOpenedFrom = null
+        if (!isTv) return@LaunchedEffect
+        val target = if (from == TrackPanelKind.AUDIO) audioFocusRequester else subtitleFocusRequester
+        repeat(5) {
+            withFrameNanos { }
+            // requestFocus() says false while the button isn't back yet (the controls fade in).
+            if (runCatching { target.requestFocus() }.getOrDefault(false)) return@LaunchedEffect
+        }
+    }
 
     LaunchedEffect(effectiveControlsVisible) {
         if (effectiveControlsVisible) {
             kotlinx.coroutines.yield()
             try {
-                playPauseFocusRequester.requestFocus()
+                // On the TV, Skip intro keeps the focus while it shows, so OK still skips once the controls appear.
+                if (isTv && skipIntroVisible) skipIntroFocusRequester.requestFocus() else playPauseFocusRequester.requestFocus()
             } catch (_: Exception) {}
         }
     }
@@ -197,6 +261,7 @@ fun MinimalPlayerView(
                     this.isFocusable = false
                     this.isFocusableInTouchMode = false
                     (this as? android.view.ViewGroup)?.descendantFocusability = android.view.ViewGroup.FOCUS_BLOCK_DESCENDANTS
+                    subtitleView?.let { SubtitleTrackHelper.applyStyle(it, isTv) }
                 }
             },
             modifier = Modifier.fillMaxSize()
@@ -264,7 +329,8 @@ fun MinimalPlayerView(
 
         // Overlay Controls
         AnimatedVisibility(
-            visible = effectiveControlsVisible || isEnded,
+            // Task P.8: the controls step aside while a track panel is open.
+            visible = (effectiveControlsVisible || isEnded) && openPanel == null,
             enter = fadeIn(),
             exit = fadeOut(),
             modifier = Modifier.fillMaxSize()
@@ -293,17 +359,50 @@ fun MinimalPlayerView(
                     onUserInteraction?.invoke()
                     player.seekTo(targetMs.coerceIn(0L, durationMs))
                 },
-                onAudioTrackClick = {
-                    onUserInteraction?.invoke()
-                    showAudioTrackDialog = true
-                },
+                onAudioTrackClick = { openTrackPanel(TrackPanelKind.AUDIO) },
+                subtitleTracks = subtitleTracks,
+                onSubtitleClick = { openTrackPanel(TrackPanelKind.SUBTITLES) },
+                subtitleFocusRequester = subtitleFocusRequester,
+                audioFocusRequester = audioFocusRequester,
                 onNextEpisodeClick = {
                     onUserInteraction?.invoke()
                     onNextEpisodeClick()
                 },
+                hasPreviousEpisode = !previousEpisodeTitle.isNullOrEmpty(),
+                onPreviousEpisodeClick = {
+                    onUserInteraction?.invoke()
+                    onPreviousEpisodeClick()
+                },
+                onDetailsClick = onDetailsClick,
+                skipIntroVisible = skipIntroVisible,
+                skipIntroFocusRequester = skipIntroFocusRequester,
+                timelineFocusRequester = timelineFocusRequester,
                 onBackPressed = onBackPressed
             )
         }
+
+        SkipIntroButton(
+            visible = skipIntroVisible,
+            controlsVisible = effectiveControlsVisible,
+            focusAfterHiding = playPauseFocusRequester,
+            onClick = {
+                onUserInteraction?.invoke()
+                onSkipIntro()
+                skipIntro?.let { currentPositionMs = SkipIntroWindow.seekTarget(it) }
+            },
+            focusRequester = skipIntroFocusRequester,
+            // Phone: no focus (a focused control turns white, which would look odd under a finger).
+            takeFocusOnShow = isTv,
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                // TV focus order: Up to the centre Play/Pause, Down to the timeline, while the controls show them.
+                .focusProperties {
+                    if (effectiveControlsVisible && !isEnded && openPanel == null) {
+                        up = playPauseFocusRequester
+                        down = timelineFocusRequester
+                    }
+                }
+        )
 
         // Unsupported Video / Audio Notification Banners
         if (errorMessage == null) {
@@ -325,19 +424,31 @@ fun MinimalPlayerView(
             }
         }
 
-        if (showAudioTrackDialog) {
-            AudioTrackSelectorDialog(
-                tracks = audioTracks,
-                selectedTrackIndex = selectedAudioTrackIndex,
+        when (openPanel) {
+            TrackPanelKind.SUBTITLES -> SubtitleTrackPanel(
+                tracks = subtitleTracks,
+                isOff = subtitlesOff,
+                isTv = isTv,
                 onTrackSelected = { track ->
-                    selectedAudioTrackIndex = track.index
+                    SubtitleTrackHelper.select(player, track)
+                    subtitlesOff = false
+                },
+                onOff = {
+                    SubtitleTrackHelper.turnOff(player)
+                    subtitlesOff = true
+                },
+                onClose = closeTrackPanel
+            )
+            TrackPanelKind.AUDIO -> AudioTrackPanel(
+                tracks = audioTracks,
+                isTv = isTv,
+                onTrackSelected = { track ->
                     AudioTrackHelper.selectAudioTrack(player, track)
                     unsupportedAudioMessage = null
                 },
-                onDismissRequest = {
-                    showAudioTrackDialog = false
-                }
+                onClose = closeTrackPanel
             )
+            null -> Unit
         }
     }
 }
@@ -353,8 +464,10 @@ fun UnsupportedFormatBanner(message: String, onDismiss: () -> Unit) {
             .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        Icon(AppIcons.Warning, contentDescription = null, tint = Color(0xFFFCD34D), modifier = Modifier.size(18.dp))
+        Spacer(modifier = Modifier.width(10.dp))
         Text(
-            text = "⚠️  $message",
+            text = message,
             color = Color(0xFFFCD34D),
             fontSize = 13.sp,
             fontWeight = FontWeight.Medium,

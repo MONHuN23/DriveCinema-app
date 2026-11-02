@@ -27,6 +27,8 @@ import java.util.Collections
  * (`validateStreamingFolder` + `executeInitialCrawl`) for a small fixture library. It pins down the request
  * pattern so a later optimisation can be measured against it: one listing per folder, sequential, plus one
  * duplicate listing of the root folder (validation and crawl both list it) and one start-page-token call.
+ * Task N.1: still every folder once (the root twice), but one request per folder level (4 here, 3 crawl levels plus
+ * the folder check, was 10), and no start-page-token call.
  */
 class StartupSyncRequestCountTest {
 
@@ -50,6 +52,7 @@ class StartupSyncRequestCountTest {
     private val server = MockWebServer()
     private val listed: MutableList<String> = Collections.synchronizedList(mutableListOf())
     private val otherCalls: MutableList<String> = Collections.synchronizedList(mutableListOf())
+    private val requests = java.util.concurrent.atomic.AtomicInteger()
     private lateinit var dir: File
     private lateinit var db: DriveCinemaDatabase
 
@@ -63,10 +66,10 @@ class StartupSyncRequestCountTest {
                     return MockResponse().setBody("""{"startPageToken":"42"}""")
                 }
                 val q = url.queryParameter("q").orEmpty()
-                val id = Regex("""^'([^']+)' in parents""").find(q)?.groupValues?.get(1)
-                    ?: return MockResponse().setResponseCode(404)
-                listed += id
-                return MockResponse().setBody(JSONObject().put("files", JSONArray(tree[id] ?: emptyList<JSONObject>())).toString())
+                val ids = FakeDriveListing.folderIds(q).ifEmpty { return MockResponse().setResponseCode(404) }
+                listed += ids
+                requests.incrementAndGet()
+                return MockResponse().setBody(FakeDriveListing.body(ids) { tree[it] ?: emptyList() })
             }
         }
         server.start()
@@ -98,7 +101,8 @@ class StartupSyncRequestCountTest {
         assertEquals(2, listed.count { it == "root" })
         assertEquals(tree.keys - "root", listed.filter { it != "root" }.toSet())
         assertEquals(listed.size - 1, listed.toSet().size)
-        assertEquals(listOf("startPageToken"), otherCalls.toList())
+        assertEquals("the folder check, then the levels root+Films+Series, Collection+shows, seasons", 4, requests.get())
+        assertEquals(emptyList<String>(), otherCalls.toList())
     }
 
     @Test

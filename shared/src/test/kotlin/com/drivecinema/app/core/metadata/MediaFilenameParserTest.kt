@@ -125,4 +125,69 @@ class MediaFilenameParserTest {
         assertEquals("The Web", MediaFilenameParser.parseEpisode("Show.S01E02.The.Web.mkv").episodeTitle)
         assertEquals("Movie Name", MediaFilenameParser.parseMovie("Movie.Name.WEB-DL.x264-GRP.mkv").cleanTitle)
     }
+
+    // F-43: every One Piece file was S01E01: the episode number allowed two digits, and fansub names have no season.
+
+    @Test
+    fun episodeNumbersOfThreeAndFourDigitsAreRead() {
+        val scene = MediaFilenameParser.parseEpisode("one.piece.s24e1180.1080p.web.h264-senpai.mkv")
+        assertEquals("one piece", scene.cleanShowName)
+        assertEquals(24, scene.season)
+        assertEquals(1180, scene.episode)
+        assertEquals(105, MediaFilenameParser.parseEpisode("Naruto.S03E105.mkv").episode)
+    }
+
+    @Test
+    fun fansubNamesGiveTheRunningNumberInSeasonOne() {
+        val fansub = MediaFilenameParser.parseEpisode("[SubsPlease] One Piece - 1171 (1080p) [08CA0446].mkv")
+        assertEquals("One Piece", fansub.cleanShowName)
+        assertEquals(1, fansub.season)
+        assertEquals(1171, fansub.episode)
+        assertEquals(12, MediaFilenameParser.parseEpisode("[Group] Frieren - 12v2 [1080p].mkv").episode)
+        assertEquals(7, MediaFilenameParser.parseEpisode("Some Show - 07.mkv").episode)
+    }
+
+    @Test
+    fun aResolutionAfterTheDashIsNotAnEpisodeNumber() {
+        assertEquals(1, MediaFilenameParser.parseEpisode("Some Show - 1080p.mkv").episode)
+        assertEquals(5, MediaFilenameParser.parseEpisode("Some Show - S02E05 - Episode Name.mkv").episode)
+        assertEquals(2, MediaFilenameParser.parseEpisode("Some Show - S02E05 - Episode Name.mkv").season)
+    }
+
+    // --- F-44: the last year-like number is the year ---
+
+    @Test
+    fun aTitleWithAYearLikeNumberKeepsIt() {
+        val blade = MediaFilenameParser.parseMovie("Blade Runner 2049 (2017).mkv")
+        assertEquals("Blade Runner 2049", blade.cleanTitle)
+        assertEquals(2017, blade.year)
+        val scene = MediaFilenameParser.parseMovie("Blade.Runner.2049.2017.2160p.UHD.mkv")
+        assertEquals("Blade Runner 2049", scene.cleanTitle)
+        assertEquals(2017, scene.year)
+    }
+
+    @Test
+    fun titlesThatAreANumberStillGetTheirYear() {
+        assertEquals(MovieParseResult("1917", 2019), MediaFilenameParser.parseMovie("1917 (2019).mkv"))
+        assertEquals(MovieParseResult("2001 A Space Odyssey", 1968), MediaFilenameParser.parseMovie("2001 A Space Odyssey (1968).mkv"))
+        assertEquals(MovieParseResult("Ted", 2024), MediaFilenameParser.parseMovie("Ted (2024)"))
+    }
+
+    @Test
+    fun animeTagBeforeTheYearIsKeptAfterItIsLost() {
+        assertEquals(MovieParseResult("One Piece Anime", 1999), MediaFilenameParser.parseMovie("One Piece (Anime) (1999)"))
+        assertEquals(MovieParseResult("One Piece", 1999), MediaFilenameParser.parseMovie("One Piece (1999) (Anime)"))
+    }
+
+    // --- Task R.1: which pattern read the name ---
+
+    @Test
+    fun episodeResultSaysWhichPatternReadIt() {
+        assertEquals(EpisodeNamePattern.SEASON_EPISODE, MediaFilenameParser.parseEpisode("Show S01E04.mkv").pattern)
+        assertEquals(EpisodeNamePattern.RUNNING_NUMBER, MediaFilenameParser.parseEpisode("[SubsPlease] One Piece - 1171 (1080p).mkv").pattern)
+        assertEquals(EpisodeNamePattern.BARE_NUMBER, MediaFilenameParser.parseEpisode("04 The Title.mkv").pattern)
+        val none = MediaFilenameParser.parseEpisode("Behind the scenes.mkv")
+        assertEquals(EpisodeNamePattern.NONE, none.pattern)
+        assertEquals("read as E1 by default", 1, none.episode)
+    }
 }

@@ -6,6 +6,9 @@ import androidx.test.core.app.ActivityScenario
 import androidx.test.core.app.ApplicationProvider
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import com.drivecinema.app.core.database.DriveCinemaDatabase
+import com.drivecinema.app.core.database.closeInstanceForTests
+import org.junit.After
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -16,6 +19,9 @@ import org.robolectric.annotation.SQLiteMode
 @Config(sdk = [34])
 @SQLiteMode(SQLiteMode.Mode.NATIVE)
 class PlayerActivityKeyEventTest {
+
+    @After
+    fun closeDatabase() = DriveCinemaDatabase.closeInstanceForTests()
 
     @Test
     fun testDpadRevealsControlsWhenHidden() {
@@ -95,6 +101,34 @@ class PlayerActivityKeyEventTest {
                     assertTrue("Key $key should be consumed when controls are hidden", handled)
                     assertTrue("Controls should become visible on key $key", isControlsVisible.value)
                 }
+            }
+        }
+    }
+
+    @Test
+    fun backKeyClosesAnOpenTrackPanelFirst() {
+        // Task P.8: the remote's Back closes the audio/subtitle panel; the controls stay and the player stays open.
+        val intent = Intent(ApplicationProvider.getApplicationContext(), PlayerActivity::class.java).apply {
+            putExtra(PlayerActivity.EXTRA_DRIVE_FILE_ID, "test_file_id")
+            putExtra(PlayerActivity.EXTRA_TITLE, "Test Movie")
+        }
+
+        ActivityScenario.launch<PlayerActivity>(intent).use { scenario ->
+            scenario.onActivity { activity ->
+                @Suppress("UNCHECKED_CAST")
+                fun <T> state(name: String) = PlayerActivity::class.java.getDeclaredField(name)
+                    .apply { isAccessible = true }.get(activity) as androidx.compose.runtime.MutableState<T>
+                val isControlsVisible = state<Boolean>("isControlsVisible")
+                val trackPanel = state<TrackPanelKind?>("trackPanel")
+                isControlsVisible.value = true
+                trackPanel.value = TrackPanelKind.AUDIO
+
+                val handled = activity.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_BACK))
+
+                assertTrue("Back should be consumed to close the panel", handled)
+                assertTrue("the panel closes", trackPanel.value == null)
+                assertTrue("the controls stay", isControlsVisible.value)
+                assertFalse("the player stays open", activity.isFinishing)
             }
         }
     }

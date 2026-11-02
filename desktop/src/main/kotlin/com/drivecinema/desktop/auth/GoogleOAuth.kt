@@ -17,21 +17,54 @@ sealed interface AuthRedirect {
 object GoogleOAuth {
     const val AUTHORIZATION_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth"
     const val TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
+    const val REVOKE_ENDPOINT = "https://oauth2.googleapis.com/revoke"
     /** Same scope as the Android app. */
     const val DRIVE_READONLY_SCOPE = "https://www.googleapis.com/auth/drive.readonly"
+    /** Task I.1 (user decision 2026-10-21): full Drive access, desktop only, asked when import is turned on. */
+    const val DRIVE_SCOPE = "https://www.googleapis.com/auth/drive"
 
-    fun authorizationUrl(clientId: String, redirectUri: String, pkce: Pkce, state: String): String =
+    /** The normal sign-in: read-only, as on every platform. */
+    val SIGN_IN_SCOPES = listOf(DRIVE_READONLY_SCOPE)
+    /** Turning import on: read-only plus write, added to the existing grant (incremental authorization). */
+    val IMPORT_SCOPES = listOf(DRIVE_READONLY_SCOPE, DRIVE_SCOPE)
+
+    /** Milestone Q: the hidden app folder for device sync, asked when "Sync with my devices" is turned on. */
+    const val DRIVE_APPDATA_SCOPE = com.drivecinema.app.core.devicesync.AppDataClient.SCOPE
+
+    /** Turning device sync on: read-only plus the app folder, and write access again when import has it. */
+    fun deviceSyncScopes(withWriteAccess: Boolean): List<String> =
+        listOf(DRIVE_READONLY_SCOPE) + (if (withWriteAccess) listOf(DRIVE_SCOPE) else emptyList()) + DRIVE_APPDATA_SCOPE
+
+    /** True when the space-separated scope list Google returned with a token includes write access. */
+    fun hasDriveWriteAccess(grantedScope: String?): Boolean = grantedScope?.split(' ')?.contains(DRIVE_SCOPE) == true
+
+    /** Milestone Q: false only when the granted scopes are known and lack the app folder (null = not known yet). */
+    fun mayHaveAppDataAccess(grantedScope: String?): Boolean = grantedScope == null || grantedScope.split(' ').contains(DRIVE_APPDATA_SCOPE)
+
+    fun authorizationUrl(
+        clientId: String,
+        redirectUri: String,
+        pkce: Pkce,
+        state: String,
+        scopes: List<String> = SIGN_IN_SCOPES,
+        /** Preselects the signed-in account, so write access is asked for the same one. */
+        loginHint: String? = null
+    ): String =
         AUTHORIZATION_ENDPOINT.toHttpUrl().newBuilder()
             .addQueryParameter("client_id", clientId)
             .addQueryParameter("redirect_uri", redirectUri)
             .addQueryParameter("response_type", "code")
-            .addQueryParameter("scope", DRIVE_READONLY_SCOPE)
+            .addQueryParameter("scope", scopes.joinToString(" "))
             .addQueryParameter("code_challenge", pkce.challenge)
             .addQueryParameter("code_challenge_method", "S256")
             .addQueryParameter("state", state)
             // A refresh token every time, like the Android app (access_type=offline + prompt=consent).
             .addQueryParameter("access_type", "offline")
             .addQueryParameter("prompt", "consent")
+            .apply {
+                if (scopes != SIGN_IN_SCOPES) addQueryParameter("include_granted_scopes", "true")
+                loginHint?.let { addQueryParameter("login_hint", it) }
+            }
             .build()
             .toString()
 

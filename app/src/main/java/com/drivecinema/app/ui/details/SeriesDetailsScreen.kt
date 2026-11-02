@@ -1,61 +1,63 @@
 package com.drivecinema.app.ui.details
 
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.focusable
+import androidx.compose.foundation.indication
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
-import androidx.compose.material3.IconButton
+import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.drivecinema.app.core.database.entity.SeriesEntity
+import com.drivecinema.app.theme.DcColors
+import com.drivecinema.app.theme.DcTheme
+import com.drivecinema.app.ui.TmdbImages
+import com.drivecinema.app.ui.design.DcButton
+import com.drivecinema.app.ui.design.DcButtonKind
+import com.drivecinema.app.ui.design.DcControlColors
+import com.drivecinema.app.ui.design.DcFocusIndication
+import com.drivecinema.app.ui.design.DcIconButton
+import com.drivecinema.app.ui.design.DcTokens
+import com.drivecinema.app.ui.icons.AppIcons
 import com.drivecinema.app.ui.player.WatchState
-import java.util.Locale
+import com.drivecinema.app.ui.setup.SettingsLabels
 
-@OptIn(ExperimentalLayoutApi::class)
+/**
+ * A series' details on the phone (Task P.5, design §5): the backdrop, the poster over it with the title, one facts
+ * line ("2012 · 3 seasons · [star] 7.2") and the genres as text; Play with today's labels; the overview; season tabs; the
+ * season's episodes as borderless rows.
+ */
 @Composable
 fun SeriesDetailsScreen(
     series: SeriesEntity,
@@ -63,540 +65,203 @@ fun SeriesDetailsScreen(
     onSeasonSelect: (Int) -> Unit,
     onEpisodeClick: (EpisodeItem) -> Unit,
     onBackClick: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    /** Milestone D: the phone's "Play on TV" for an episode; null hides it (TV, or no TV linked). */
+    onPlayOnTvClick: ((EpisodeItem) -> Unit)? = null,
+    /** Task R.2: the Naming check (this series' files against TMDB); null hides it. No badge yet (R.6). */
+    onNamingCheckClick: (() -> Unit)? = null
 ) {
     val seasonEpisodes = state.episodes.filter { it.season == state.selectedSeason }
     val nextEpisode = state.nextEpisode
-
-    val backInteractionSource = remember { MutableInteractionSource() }
-    val isBackFocused by backInteractionSource.collectIsFocusedAsState()
-
-    val playInteractionSource = remember { MutableInteractionSource() }
-    val isPlayFocused by playInteractionSource.collectIsFocusedAsState()
     val playFocusRequester = remember { FocusRequester() }
 
-    LaunchedEffect(nextEpisode) {
-        if (nextEpisode != null && nextEpisode.isAvailable) {
-            try {
-                playFocusRequester.requestFocus()
-            } catch (_: Exception) {}
+    // F-37: Play gets the initial focus once per series. Progress and copies re-emit (player returned, a sync) with
+    // new EpisodeItems; keying on nextEpisode moved the focus back to Play while the user scrolled the episodes.
+    val hasPlay = nextEpisode != null && nextEpisode.isAvailable
+    var initialFocusDone by remember(series.id) { mutableStateOf(false) }
+    LaunchedEffect(series.id, hasPlay) {
+        if (!hasPlay || initialFocusDone) return@LaunchedEffect
+        // Play is in a lazy item, which can be laid out a frame after this effect starts: try on the next frames.
+        repeat(5) {
+            if (runCatching { playFocusRequester.requestFocus() }.getOrDefault(false)) {
+                initialFocusDone = true
+                return@LaunchedEffect
+            }
+            withFrameNanos { }
         }
     }
 
-    Box(
-        modifier = modifier
-            .fillMaxSize()
-            .background(Color(0xFF0C0D10))
-    ) {
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(bottom = 60.dp)
-        ) {
-            // Backdrop Header
-            item {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(260.dp)
-                ) {
-                    val backdropUrl = when {
-                        !series.backdropPath.isNullOrEmpty() -> "https://image.tmdb.org/t/p/w780${series.backdropPath}"
-                        !series.posterPath.isNullOrEmpty() -> "https://image.tmdb.org/t/p/w780${series.posterPath}"
-                        else -> null
-                    }
-
-                    if (backdropUrl != null) {
-                        AsyncImage(
-                            model = backdropUrl,
-                            contentDescription = series.title,
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier.fillMaxSize()
-                        )
-                    } else {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .background(Color(0xFF16181D))
-                        )
-                    }
-
-                    // Scrim
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .background(
-                                Brush.verticalGradient(
-                                    colors = listOf(Color.Transparent, Color(0xFF0C0D10)),
-                                    startY = 80f
-                                )
-                            )
-                    )
-
-                    // Back Button with TV Focus state and Edge-to-Edge Status Bar Insets
-                    IconButton(
-                        onClick = onBackClick,
-                        interactionSource = backInteractionSource,
-                        modifier = Modifier
-                            .align(Alignment.TopStart)
-                            .statusBarsPadding()
-                            .padding(16.dp)
-                            .size(48.dp)
-                            .clip(CircleShape)
-                            .background(if (isBackFocused) Color(0xFFE50914) else Color.Black.copy(alpha = 0.5f))
-                            .border(
-                                border = if (isBackFocused) BorderStroke(2.dp, Color.White) else BorderStroke(0.dp, Color.Transparent),
-                                shape = CircleShape
-                            )
-                    ) {
-                        Text("←", color = Color.White, fontSize = 24.sp)
-                    }
-                }
+    Box(modifier = modifier.fillMaxSize().background(DcColors.Canvas)) {
+        LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 48.dp)) {
+            item(key = "backdrop", contentType = "backdrop") {
+                DetailsBackdrop(
+                    TmdbImages.detailsHeader(series.backdropPath, series.posterPath),
+                    contentDescription = series.title,
+                    modifier = Modifier.fillMaxWidth().height(PHONE_BACKDROP_HEIGHT)
+                )
             }
-
-            // Series Header Info
-            item {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 20.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(16.dp)
-                    ) {
-                        // Poster thumbnail
-                        if (!series.posterPath.isNullOrEmpty()) {
-                            Box(
-                                modifier = Modifier
-                                    .width(100.dp)
-                                    .height(150.dp)
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .border(BorderStroke(1.dp, Color(0xFF2A2D35)), RoundedCornerShape(8.dp))
-                                    .background(Color(0xFF16181D))
-                            ) {
-                                AsyncImage(
-                                    model = "https://image.tmdb.org/t/p/w342${series.posterPath}",
-                                    contentDescription = series.title,
-                                    contentScale = ContentScale.Crop,
-                                    modifier = Modifier.fillMaxSize()
-                                )
-                            }
-                        }
-
-                        // Title & Metadata
-                        Column(
-                            modifier = Modifier
-                                .weight(1f)
-                                .align(Alignment.CenterVertically)
-                        ) {
-                            Text(
-                                text = series.title,
-                                color = Color.White,
-                                fontSize = 24.sp,
-                                fontWeight = FontWeight.Bold,
-                                lineHeight = 30.sp
-                            )
-
-                            Spacer(modifier = Modifier.height(8.dp))
-
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(10.dp)
-                            ) {
-                                if (series.year != null) {
-                                    Text(
-                                        text = series.year.toString(),
-                                        color = Color.LightGray,
-                                        fontSize = 14.sp,
-                                        fontWeight = FontWeight.Medium
-                                    )
-                                }
-
-                                if (state.seasons.isNotEmpty()) {
-                                    val count = state.seasons.size
-                                    Text(
-                                        text = "$count ${if (count == 1) "Season" else "Seasons"}",
-                                        color = Color.LightGray,
-                                        fontSize = 14.sp,
-                                        fontWeight = FontWeight.Medium
-                                    )
-                                }
-                            }
-
-                            // Rating
-                            series.voteAverage?.takeIf { it > 0.0 }?.let { voteAverage ->
-                                Spacer(modifier = Modifier.height(8.dp))
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                ) {
-                                    Text(
-                                        text = "★",
-                                        color = Color(0xFFFFC107),
-                                        fontSize = 15.sp,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                    Text(
-                                        text = String.format(Locale.US, "%.1f", voteAverage),
-                                        color = Color.White,
-                                        fontSize = 14.sp,
-                                        fontWeight = FontWeight.SemiBold
-                                    )
-                                    series.voteCount?.takeIf { it > 0 }?.let { voteCount ->
-                                        Text(
-                                            text = "($voteCount)",
-                                            color = Color.Gray,
-                                            fontSize = 12.sp
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Genres row
-                    val genreList = series.genres?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() } ?: emptyList()
-                    if (genreList.isNotEmpty()) {
-                        Spacer(modifier = Modifier.height(14.dp))
-                        FlowRow(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            genreList.forEach { genre ->
-                                Box(
-                                    modifier = Modifier
-                                        .background(Color(0xFF1E212A), RoundedCornerShape(12.dp))
-                                        .border(BorderStroke(1.dp, Color(0xFF2E3342)), RoundedCornerShape(12.dp))
-                                        .padding(horizontal = 10.dp, vertical = 4.dp)
-                                ) {
-                                    Text(
-                                        text = genre,
-                                        color = Color(0xFFD0D4E0),
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.Medium
-                                    )
-                                }
-                            }
-                        }
-                    }
-
-                    // Smart Play Next Button
-                    if (nextEpisode != null && nextEpisode.isAvailable) {
-                        Spacer(modifier = Modifier.height(18.dp))
-                        Button(
+            item(key = "header", contentType = "header") {
+                Column(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                    PhoneTitleBlock(
+                        title = series.title,
+                        posterPath = series.posterPath,
+                        facts = facts(series.year?.toString(), seasonCountText(state.seasons.size), voteAverage = series.voteAverage),
+                        genres = genresText(series.genres)
+                    )
+                    if (nextEpisode != null && hasPlay) {
+                        DcButton(
+                            playEpisodeLabel(nextEpisode),
                             onClick = { onEpisodeClick(nextEpisode) },
-                            interactionSource = playInteractionSource,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(48.dp)
-                                .focusRequester(playFocusRequester)
-                                .border(
-                                    border = if (isPlayFocused) BorderStroke(3.dp, Color.White) else BorderStroke(0.dp, Color.Transparent),
-                                    shape = RoundedCornerShape(8.dp)
-                                ),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = if (isPlayFocused) Color(0xFFFF1E28) else Color(0xFFE50914),
-                                contentColor = Color.White
-                            ),
-                            shape = RoundedCornerShape(8.dp)
-                        ) {
-                            val epLabel = "S${nextEpisode.season}E${nextEpisode.episode}"
-                            val statusLabel = if (nextEpisode.isCompleted) "Replay" else if (nextEpisode.positionMs > 0) "Resume" else "Play"
-                            val epTitle = if (nextEpisode.title.isNotEmpty()) " • ${nextEpisode.title}" else ""
-                            Text(
-                                text = "▶  $statusLabel $epLabel$epTitle",
-                                fontSize = 15.sp,
-                                fontWeight = FontWeight.Bold,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
+                            icon = AppIcons.PlayArrow,
+                            modifier = Modifier.fillMaxWidth().focusRequester(playFocusRequester)
+                        )
+                        if (onPlayOnTvClick != null) {
+                            PlayOnTvButton(
+                                label = "Play S${nextEpisode.season}E${nextEpisode.episode} on TV",
+                                onClick = { onPlayOnTvClick(nextEpisode) }
                             )
                         }
                     }
-
-                    // Overview
-                    if (!series.overview.isNullOrEmpty()) {
-                        Spacer(modifier = Modifier.height(16.dp))
-                        Text(
-                            text = series.overview.orEmpty(),
-                            color = Color(0xFFB0B3B8),
-                            fontSize = 14.sp,
-                            lineHeight = 20.sp,
-                            maxLines = 4,
-                            overflow = TextOverflow.Ellipsis
+                    series.overview?.takeIf { it.isNotEmpty() }?.let {
+                        Text(it, style = DcTheme.type.body, color = DcColors.Text2, maxLines = 4, overflow = TextOverflow.Ellipsis)
+                    }
+                    if (onNamingCheckClick != null) {
+                        DcButton(
+                            SettingsLabels.NAMING_CHECK,
+                            onClick = onNamingCheckClick,
+                            kind = DcButtonKind.Secondary,
+                            icon = AppIcons.InsertDriveFile,
+                            small = true,
+                            modifier = Modifier.testTag("details_naming_check")
                         )
                     }
-
-                    Spacer(modifier = Modifier.height(20.dp))
-
-                    // Season Selector Chips
-                    if (state.seasons.isNotEmpty()) {
-                        Text(
-                            text = "Seasons",
-                            color = Color.White,
-                            fontSize = 18.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        LazyRow(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            items(state.seasons) { seasonNum ->
-                                SeasonChip(
-                                    season = seasonNum,
-                                    selected = state.selectedSeason == seasonNum,
-                                    onClick = { onSeasonSelect(seasonNum) }
-                                )
-                            }
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Text(
-                        text = "Episodes (${seasonEpisodes.size})",
-                        color = Color.White,
-                        fontSize = 18.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
                 }
             }
-
-            // Episode List
-            items(seasonEpisodes, key = { it.id ?: "s${it.season}e${it.episode}" }) { episode ->
+            if (state.seasons.isNotEmpty()) {
+                item(key = "seasons", contentType = "seasons") {
+                    SeasonTabs(
+                        state.seasons,
+                        selected = state.selectedSeason,
+                        onSelect = onSeasonSelect,
+                        modifier = Modifier.padding(top = 18.dp, bottom = 6.dp)
+                    )
+                }
+            }
+            items(seasonEpisodes, key = { it.id ?: "s${it.season}e${it.episode}" }, contentType = { "episode" }) { episode ->
                 EpisodeRowItem(
                     episode = episode,
                     fallbackBackdropPath = series.backdropPath ?: series.posterPath,
                     onClick = { onEpisodeClick(episode) },
-                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp)
+                    modifier = Modifier.padding(horizontal = 8.dp),
+                    onPlayOnTvClick = onPlayOnTvClick?.takeIf { episode.isAvailable }?.let { send -> { send(episode) } }
                 )
             }
         }
+        DcIconButton(
+            AppIcons.ArrowBack,
+            contentDescription = "Back",
+            onClick = onBackClick,
+            onImage = true,
+            modifier = Modifier.align(Alignment.TopStart).statusBarsPadding().padding(8.dp)
+        )
     }
 }
 
-/** How a season chip looks: red = the season shown, white border = where the TV remote is. */
-internal data class SeasonChipStyle(val container: Color, val label: Color, val border: BorderStroke?)
-
-internal fun seasonChipStyle(selected: Boolean, focused: Boolean): SeasonChipStyle = SeasonChipStyle(
-    container = when {
-        selected -> Color(0xFFE50914)
-        focused -> Color(0xFF3A3F4B)
-        else -> Color(0xFF16181D)
-    },
-    label = if (selected || focused) Color.White else Color.LightGray,
-    border = if (focused) BorderStroke(3.dp, Color.White) else null
+/** An episode row's focus look: no border or card (design §5); a light fill and the white ring when focused. */
+private val episodeRowColors = DcControlColors(
+    container = Color.Transparent,
+    content = DcColors.Text1,
+    focusedContainer = DcColors.Surface2,
+    focusedContent = DcColors.Text1
 )
 
-@Composable
-private fun SeasonChip(season: Int, selected: Boolean, onClick: () -> Unit) {
-    val interactionSource = remember { MutableInteractionSource() }
-    val isFocused by interactionSource.collectIsFocusedAsState()
-    val style = seasonChipStyle(selected, isFocused)
-    FilterChip(
-        selected = selected,
-        onClick = onClick,
-        label = { Text("Season $season", fontWeight = if (isFocused || selected) FontWeight.Bold else FontWeight.Normal) },
-        colors = FilterChipDefaults.filterChipColors(
-            selectedContainerColor = style.container,
-            selectedLabelColor = style.label,
-            containerColor = style.container,
-            labelColor = style.label
-        ),
-        border = style.border ?: FilterChipDefaults.filterChipBorder(enabled = true, selected = selected),
-        interactionSource = interactionSource
-    )
-}
-
+/**
+ * One episode on the phone (borderless, design §5): the still with the watched check or the progress bar, "E3. Title"
+ * on up to two lines, its facts ("21 min · 720p · [star] 7.8"), the time left, two lines of overview. An episode missing
+ * on Drive can't be opened.
+ */
 @Composable
 fun EpisodeRowItem(
     episode: EpisodeItem,
     fallbackBackdropPath: String?,
     onClick: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    /** Milestone D: a TV button at the end of the row (phone with a linked TV only). */
+    onPlayOnTvClick: (() -> Unit)? = null
 ) {
-    val progressRatio = if (episode.durationMs > 0) episode.positionMs.toFloat() / episode.durationMs.toFloat() else 0f
     val interactionSource = remember { MutableInteractionSource() }
-    val isFocused by interactionSource.collectIsFocusedAsState()
-
-    val cardBorder = if (isFocused) {
-        BorderStroke(2.dp, Color.White)
-    } else {
-        BorderStroke(1.dp, Color(0xFF1E212A))
-    }
-
-    val cardBackground = if (isFocused) {
-        Color(0xFF222633)
-    } else {
-        Color(0xFF13151C)
-    }
-
-    Box(
+    Row(
         modifier = modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(8.dp))
-            .background(cardBackground)
-            .border(cardBorder, RoundedCornerShape(8.dp))
-            .clickable(
-                enabled = episode.isAvailable,
-                interactionSource = interactionSource,
-                indication = null,
-                onClick = onClick
+            .indication(
+                interactionSource,
+                DcFocusIndication(episodeRowColors, DcTokens.Radius.CARD.dp, focusedScale = 1f, recolorContent = false)
             )
-            .focusable(
-                enabled = episode.isAvailable,
-                interactionSource = interactionSource
-            )
-            .padding(10.dp)
+            .clickable(enabled = episode.isAvailable, interactionSource = interactionSource, indication = null, onClick = onClick)
+            .padding(8.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            // Episode Thumbnail (16:9 ratio)
-            Box(
-                modifier = Modifier
-                    .width(120.dp)
-                    .height(68.dp)
-                    .clip(RoundedCornerShape(6.dp))
-                    .background(Color(0xFF1E212A))
-            ) {
-                val stillPath = episode.stillPath ?: fallbackBackdropPath
-                if (!stillPath.isNullOrEmpty()) {
-                    AsyncImage(
-                        model = "https://image.tmdb.org/t/p/w300$stillPath",
-                        contentDescription = episode.title,
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize()
-                    )
-                }
-
-                // If not available on Drive, darken with badge
-                if (!episode.isAvailable) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .background(Color.Black.copy(alpha = 0.7f)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = "UNAVAILABLE",
-                            color = Color.LightGray,
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-                } else if (episode.isCompleted) {
-                    // Watched episodes are dimmed so the unwatched ones stand out (Milestone J.1).
-                    Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.45f)))
-                    Box(
-                        modifier = Modifier
-                            .align(Alignment.TopEnd)
-                            .padding(4.dp)
-                            .background(Color(0xFF2E7D32), RoundedCornerShape(4.dp))
-                            .padding(horizontal = 4.dp, vertical = 2.dp)
-                    ) {
-                        Text("✓", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                    }
-                }
-
-                // In-progress indicator bar
-                if (episode.positionMs > 0 && !episode.isCompleted) {
-                    LinearProgressIndicator(
-                        progress = { progressRatio.coerceIn(0f, 1f) },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(4.dp)
-                            .align(Alignment.BottomCenter),
-                        color = Color(0xFFE50914),
-                        trackColor = Color.Black.copy(alpha = 0.6f)
-                    )
+        EpisodeStill(episode, fallbackBackdropPath, Modifier.size(width = 128.dp, height = 72.dp))
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(
+                episodeTitle(episode),
+                style = DcTheme.type.rowTitle,
+                color = when {
+                    !episode.isAvailable -> DcColors.Text3
+                    episode.isCompleted -> DcColors.Text2
+                    else -> DcColors.Text1
+                },
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+            episodeFacts(episode)?.let {
+                FactsText(it, Modifier.testTag("episode_info_line"), style = DcTheme.type.caption)
+            }
+            if (episode.isAvailable && !episode.isCompleted) {
+                WatchState.label(episode.positionMs, episode.durationMs, episode.isCompleted)?.let {
+                    Text(it, style = DcTheme.type.caption, color = DcColors.Danger)
                 }
             }
-
-            // Episode Text Info
-            Column(
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(start = 12.dp)
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "E${episode.episode}. ${episode.title.ifEmpty { "Episode ${episode.episode}" }}",
-                        color = when {
-                            !episode.isAvailable -> Color.Gray
-                            episode.isCompleted -> Color(0xFFB0B4BF)
-                            else -> Color.White
-                        },
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f, fill = false)
-                    )
-
-                    if (episode.voteAverage != null && episode.voteAverage > 0.0) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.padding(start = 6.dp)
-                        ) {
-                            Text(
-                                text = "★",
-                                color = Color(0xFFFFC107),
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Spacer(modifier = Modifier.width(2.dp))
-                            Text(
-                                text = String.format(Locale.US, "%.1f", episode.voteAverage),
-                                color = Color.LightGray,
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Medium
-                            )
-                        }
-                    }
-                }
-
-                val watchLabel = if (episode.isAvailable) {
-                    WatchState.label(episode.positionMs, episode.durationMs, episode.isCompleted)
-                } else {
-                    null
-                }
-                if (watchLabel != null) {
-                    Spacer(modifier = Modifier.height(2.dp))
-                    Text(
-                        text = watchLabel,
-                        color = if (episode.isCompleted) Color(0xFF66BB6A) else Color(0xFFFF8A80),
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                }
-
-                if (!episode.overview.isNullOrEmpty()) {
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = episode.overview,
-                        color = Color(0xFF8F94A3),
-                        fontSize = 12.sp,
-                        lineHeight = 16.sp,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-
-                if (!episode.isAvailable) {
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = "Missing on Drive",
-                        color = Color(0xFFE57373),
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Medium
-                    )
-                }
+            episode.overview?.takeIf { it.isNotEmpty() }?.let {
+                Text(it, style = DcTheme.type.caption, color = DcColors.Text3, maxLines = 2, overflow = TextOverflow.Ellipsis)
             }
+            if (!episode.isAvailable) {
+                Text("Missing on Drive", style = DcTheme.type.caption, color = DcColors.Danger)
+            }
+        }
+        if (onPlayOnTvClick != null) {
+            DcIconButton(AppIcons.Tv, contentDescription = "Play on TV", onClick = onPlayOnTvClick, modifier = Modifier.testTag("episode_play_on_tv"))
+        }
+    }
+}
+
+/**
+ * An episode's still (Home's wide-card size, `TmdbImages.wideCard`), dimmed with a check when watched, "Unavailable"
+ * when missing on Drive, a red progress bar when started.
+ */
+@Composable
+internal fun EpisodeStill(episode: EpisodeItem, fallbackBackdropPath: String?, modifier: Modifier = Modifier) {
+    Box(modifier = modifier.clip(RoundedCornerShape(DcTokens.Radius.CONTROL.dp)).background(DcColors.Surface2)) {
+        TmdbImages.wideCard(episode.stillPath ?: fallbackBackdropPath)?.let { url ->
+            AsyncImage(model = url, contentDescription = episode.title, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+        }
+        if (!episode.isAvailable) {
+            Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.7f)), contentAlignment = Alignment.Center) {
+                Text("Unavailable", style = DcTheme.type.caption, color = DcColors.Text2)
+            }
+        } else if (episode.isCompleted) {
+            // Watched episodes are dimmed so the unwatched ones stand out (Milestone J.1); one marker only (L.5).
+            Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.55f)), contentAlignment = Alignment.Center) {
+                Icon(AppIcons.CheckCircle, contentDescription = "Watched", tint = Color.White, modifier = Modifier.size(28.dp))
+            }
+        }
+        if (episode.positionMs > 0 && !episode.isCompleted && episode.durationMs > 0) {
+            LinearProgressIndicator(
+                progress = { (episode.positionMs.toFloat() / episode.durationMs).coerceIn(0f, 1f) },
+                modifier = Modifier.fillMaxWidth().height(4.dp).align(Alignment.BottomCenter),
+                color = DcColors.Brand,
+                trackColor = Color.Black.copy(alpha = 0.6f)
+            )
         }
     }
 }

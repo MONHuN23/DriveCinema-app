@@ -1,7 +1,8 @@
 package com.drivecinema.app.ui.tv.search
 
-import androidx.compose.animation.Crossfade
-import androidx.compose.animation.core.tween
+import androidx.compose.foundation.layout.size
+import com.drivecinema.app.ui.icons.AppIcons
+import androidx.compose.material3.Icon
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -30,33 +31,31 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.focusRestorer
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import coil.compose.AsyncImage
 import com.drivecinema.app.core.database.entity.MediaItemEntity
 import com.drivecinema.app.core.database.entity.SeriesEntity
 import com.drivecinema.app.ui.search.SearchUiState
+import com.drivecinema.app.ui.tv.TvInitialFocus
+import com.drivecinema.app.ui.tv.rememberTvReturnFocus
 import com.drivecinema.app.ui.tv.grid.TvCollectionGridDefaults
 import com.drivecinema.app.ui.tv.grid.TvGridItem
 import com.drivecinema.app.ui.tv.home.TvPosterCard
+import com.drivecinema.app.ui.tv.home.TvAmbientBackdrop
+import com.drivecinema.app.ui.tv.home.TvAmbientBackdropState
+import com.drivecinema.app.ui.tv.home.trackDpadHold
 
 @Composable
 fun TvSearchScreen(
@@ -68,7 +67,7 @@ fun TvSearchScreen(
     onBackClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    var activeBackdropPath by remember { mutableStateOf<String?>(null) }
+    val backdrop = remember { TvAmbientBackdropState() }
     val searchInputFocusRequester = remember { FocusRequester() }
     val focusManager = LocalFocusManager.current
 
@@ -93,7 +92,9 @@ fun TvSearchScreen(
         (movieList + seriesList).sortedBy { it.title.lowercase() }
     }
 
-    LaunchedEffect(Unit) {
+    // Back from a result lands on its card (Task M.3); a first visit starts in the text field.
+    val returnFocus = rememberTvReturnFocus()
+    TvInitialFocus(returnFocus) {
         searchInputFocusRequester.requestFocus()
     }
 
@@ -101,39 +102,15 @@ fun TvSearchScreen(
         modifier = modifier
             .fillMaxSize()
             .background(Color(0xFF0C0D10))
+            .trackDpadHold(backdrop)
     ) {
-        // Ambient Backdrop Crossfade on focused search item
-        Crossfade(
-            targetState = activeBackdropPath,
-            animationSpec = tween(durationMillis = 300),
+        // Ambient backdrop of the focused result, once focus has rested (Task M.1)
+        TvAmbientBackdrop(
+            state = backdrop,
+            height = 450.dp,
+            topScrimColor = Color(0x550C0D10),
             label = "tv_search_backdrop_crossfade"
-        ) { backdrop ->
-            if (!backdrop.isNullOrEmpty()) {
-                Box(modifier = Modifier.fillMaxSize()) {
-                    AsyncImage(
-                        model = "https://image.tmdb.org/t/p/w1280$backdrop",
-                        contentDescription = null,
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(450.dp)
-                    )
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(450.dp)
-                            .background(
-                                Brush.verticalGradient(
-                                    colors = listOf(
-                                        Color(0x550C0D10),
-                                        Color(0xFF0C0D10)
-                                    )
-                                )
-                            )
-                    )
-                }
-            }
-        }
+        )
 
         Column(
             modifier = Modifier
@@ -166,10 +143,11 @@ fun TvSearchScreen(
                         )
                     },
                     leadingIcon = {
-                        Text(
-                            text = "🔍",
-                            fontSize = 18.sp,
-                            modifier = Modifier.padding(start = 12.dp)
+                        Icon(
+                            AppIcons.Search,
+                            contentDescription = null,
+                            tint = Color(0xFF9AA0A6),
+                            modifier = Modifier.padding(start = 12.dp).size(22.dp)
                         )
                     },
                     singleLine = true,
@@ -194,7 +172,7 @@ fun TvSearchScreen(
                 // Clear Button
                 if (state.query.isNotEmpty()) {
                     TvActionButton(
-                        text = "✕ Clear",
+                        text = "Clear",
                         onClick = onClearQuery
                     )
                 }
@@ -282,6 +260,7 @@ fun TvSearchScreen(
                                 posterPath = item.posterPath,
                                 backdropPath = item.backdropPath,
                                 onClick = {
+                                    returnFocus.opened(item.id)
                                     val movie = state.movies.find { it.id == item.id }
                                     if (movie != null) {
                                         onMovieClick(movie)
@@ -292,11 +271,8 @@ fun TvSearchScreen(
                                         }
                                     }
                                 },
-                                onFocusChange = { isFocused, path ->
-                                    if (isFocused && path != null) {
-                                        activeBackdropPath = path
-                                    }
-                                }
+                                onFocusChange = backdrop::onCardFocused,
+                                modifier = returnFocus.modifierFor(item.id)
                             )
                         }
                     }

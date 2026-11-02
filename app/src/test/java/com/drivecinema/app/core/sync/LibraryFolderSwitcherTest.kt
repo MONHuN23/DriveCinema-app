@@ -22,6 +22,7 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -86,17 +87,17 @@ class LibraryFolderSwitcherTest {
                     return MockResponse().setResponseCode(200).setBody("""{"startPageToken":"tok_1"}""")
                 }
                 val q = url.queryParameter("q") ?: return MockResponse().setResponseCode(400)
-                val folderId = Regex("""'([^']+)' in parents""").find(q)?.groupValues?.get(1)
-                    ?: return MockResponse().setResponseCode(400)
-                gatedFolders[folderId]?.let { (requested, release) ->
-                    requested.countDown()
-                    release.await(10, TimeUnit.SECONDS)
+                val folderIds = FakeDriveListing.folderIds(q).ifEmpty { return MockResponse().setResponseCode(400) }
+                for (folderId in folderIds) {
+                    gatedFolders[folderId]?.let { (requested, release) ->
+                        requested.countDown()
+                        release.await(10, TimeUnit.SECONDS)
+                    }
                 }
-                httpErrors[folderId]?.let { code ->
+                folderIds.firstNotNullOfOrNull { httpErrors[it] }?.let { code ->
                     return MockResponse().setResponseCode(code).setBody("""{"error":{"code":$code}}""")
                 }
-                val files = folderChildren[folderId] ?: emptyList()
-                return MockResponse().setResponseCode(200).setBody("""{"files":[${files.joinToString(",")}]}""")
+                return MockResponse().setResponseCode(200).setBody(FakeDriveListing.body(folderIds) { folderChildren[it] ?: emptyList() })
             }
         }
         server.start()
@@ -153,7 +154,8 @@ class LibraryFolderSwitcherTest {
         assertEquals(listOf("showB"), visibleSeriesIds())
         assertEquals(listOf("bep1"), db.mediaDao().getEpisodesForSeries("showB").map { it.id })
         assertEquals("rootB", AuthCredentialStore(context).getCredentials()?.rootFolderId)
-        assertEquals("tok_1", db.syncMetadataDao().getMetadata(DriveLibrarySyncEngine.SYNC_TOKEN_KEY)?.syncToken)
+        // Task N.1: no Changes page token is fetched any more, and the previous library's one is dropped.
+        assertNull(db.syncMetadataDao().getMetadata(DriveLibrarySyncEngine.SYNC_TOKEN_KEY))
     }
 
     @Test

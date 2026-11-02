@@ -1,7 +1,7 @@
 package com.drivecinema.app.ui.mobile.search
 
+import com.drivecinema.app.ui.icons.AppIcons
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -22,16 +22,11 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.PrimaryTabRow
-import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -56,7 +51,6 @@ fun SearchScreen(
     modifier: Modifier = Modifier
 ) {
     val focusManager = LocalFocusManager.current
-    var selectedCategoryIndex by remember { mutableIntStateOf(0) }
 
     Column(
         modifier = modifier
@@ -80,21 +74,17 @@ fun SearchScreen(
                     )
                 },
                 leadingIcon = {
-                    Text(
-                        text = "🔍",
-                        fontSize = 16.sp,
-                        modifier = Modifier.padding(start = 8.dp)
+                    Icon(
+                        AppIcons.Search,
+                        contentDescription = null,
+                        tint = Color(0xFF9AA0A6),
+                        modifier = Modifier.padding(start = 8.dp).size(22.dp)
                     )
                 },
                 trailingIcon = {
                     if (state.query.isNotEmpty()) {
                         IconButton(onClick = onClearQuery) {
-                            Text(
-                                text = "✕",
-                                color = Color(0xFF9AA0A6),
-                                fontSize = 16.sp,
-                                fontWeight = FontWeight.Bold
-                            )
+                            Icon(AppIcons.Close, contentDescription = "Clear", tint = Color(0xFF9AA0A6))
                         }
                     }
                 },
@@ -176,98 +166,60 @@ fun SearchScreen(
             }
 
             else -> {
-                // Category Tabs: Films vs Series
-                val categories = listOf("Films (${state.movies.size})", "Series (${state.series.size})")
-
-                PrimaryTabRow(
-                    selectedTabIndex = selectedCategoryIndex,
-                    containerColor = Color(0xFF16181D),
-                    contentColor = Color.White
+                // Films and series together, A–Z, as on the TV: one list is quicker to scan than two tabs.
+                val results = remember(state.movies, state.series) {
+                    (state.movies.map { SearchResult.Film(it) } + state.series.map { SearchResult.Show(it) })
+                        .sortedBy { it.title.lowercase() }
+                }
+                if (!state.isEmptyQuery) {
+                    Text(
+                        text = "${results.size} results for \"${state.query}\"",
+                        color = Color(0xFF9AA0A6),
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Medium,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
+                    )
+                }
+                LazyVerticalGrid(
+                    columns = GridCells.Adaptive(110.dp),
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                    modifier = Modifier.fillMaxSize()
                 ) {
-                    categories.forEachIndexed { index, title ->
-                        Tab(
-                            selected = selectedCategoryIndex == index,
-                            onClick = { selectedCategoryIndex = index },
-                            text = {
-                                Text(
-                                    text = title,
-                                    fontSize = 14.sp,
-                                    fontWeight = if (selectedCategoryIndex == index) FontWeight.Bold else FontWeight.Normal,
-                                    color = if (selectedCategoryIndex == index) Color.White else Color.Gray
-                                )
+                    items(results, key = { it.key }, contentType = { "poster" }) { result ->
+                        PosterCard(
+                            title = result.title,
+                            posterPath = result.posterPath,
+                            onClick = {
+                                when (result) {
+                                    is SearchResult.Film -> onMovieClick(result.movie)
+                                    is SearchResult.Show -> onSeriesClick(result.series)
+                                }
                             }
                         )
                     }
                 }
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                if (selectedCategoryIndex == 0) {
-                    if (state.movies.isEmpty()) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .padding(top = 40.dp),
-                            contentAlignment = Alignment.TopCenter
-                        ) {
-                            Text(
-                                text = if (state.isEmptyQuery) "No films in catalog" else "No films match \"${state.query}\"",
-                                color = Color(0xFF9AA0A6),
-                                fontSize = 14.sp
-                            )
-                        }
-                    } else {
-                        val sortedMovies = remember(state.movies) { state.movies.sortedBy { it.title.lowercase() } }
-                        LazyVerticalGrid(
-                            columns = GridCells.Adaptive(110.dp),
-                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-                            horizontalArrangement = Arrangement.spacedBy(12.dp),
-                            verticalArrangement = Arrangement.spacedBy(16.dp),
-                            modifier = Modifier.fillMaxSize()
-                        ) {
-                            items(sortedMovies, key = { it.id }) { movie ->
-                                PosterCard(
-                                    title = movie.title,
-                                    posterPath = movie.posterPath,
-                                    onClick = { onMovieClick(movie) }
-                                )
-                            }
-                        }
-                    }
-                } else {
-                    if (state.series.isEmpty()) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .padding(top = 40.dp),
-                            contentAlignment = Alignment.TopCenter
-                        ) {
-                            Text(
-                                text = if (state.isEmptyQuery) "No series in catalog" else "No series match \"${state.query}\"",
-                                color = Color(0xFF9AA0A6),
-                                fontSize = 14.sp
-                            )
-                        }
-                    } else {
-                        val sortedSeries = remember(state.series) { state.series.sortedBy { it.title.lowercase() } }
-                        LazyVerticalGrid(
-                            columns = GridCells.Adaptive(110.dp),
-                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-                            horizontalArrangement = Arrangement.spacedBy(12.dp),
-                            verticalArrangement = Arrangement.spacedBy(16.dp),
-                            modifier = Modifier.fillMaxSize()
-                        ) {
-                            items(sortedSeries, key = { it.id }) { s ->
-                                PosterCard(
-                                    title = s.title,
-                                    posterPath = s.posterPath,
-                                    onClick = { onSeriesClick(s) }
-                                )
-                            }
-                        }
-                    }
-                }
             }
         }
+    }
+}
+
+/** One search result card: a film or a series (their IDs could repeat across the two, so the key says which). */
+private sealed interface SearchResult {
+    val key: String
+    val title: String
+    val posterPath: String?
+
+    data class Film(val movie: MediaItemEntity) : SearchResult {
+        override val key get() = "film:${movie.id}"
+        override val title get() = movie.title
+        override val posterPath get() = movie.posterPath
+    }
+
+    data class Show(val series: SeriesEntity) : SearchResult {
+        override val key get() = "series:${series.id}"
+        override val title get() = series.title
+        override val posterPath get() = series.posterPath
     }
 }

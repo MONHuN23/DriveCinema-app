@@ -91,7 +91,7 @@ class DesktopDatabaseTest {
                 statement.step()
                 statement.getLong(0)
             }
-            assertEquals(3L, version)
+            assertEquals(5L, version) // v5: Task L.3
         } finally {
             connection.close()
         }

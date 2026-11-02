@@ -82,20 +82,11 @@ class DriveLibrarySyncEngineTest {
         // 1. Initial 410 on changes.list
         server.enqueue(okhttp3.mockwebserver.MockResponse().setResponseCode(410).setBody("Gone"))
 
-        // 2. Fallback crawl responses:
-        // Films folder query
+        // 2. Fallback crawl: Films and Series are listed in one request (Task N.1), and no start-page-token request.
         server.enqueue(
             okhttp3.mockwebserver.MockResponse().setResponseCode(200).setBody(
-                """{"files":[{"id":"m1","name":"Matrix.mp4","mimeType":"video/mp4"}]}"""
+                """{"files":[{"id":"m1","name":"Matrix.mp4","mimeType":"video/mp4","parents":["f_films"]}]}"""
             )
-        )
-        // Series root folder query
-        server.enqueue(
-            okhttp3.mockwebserver.MockResponse().setResponseCode(200).setBody("""{"files":[]}""")
-        )
-        // startPageToken query
-        server.enqueue(
-            okhttp3.mockwebserver.MockResponse().setResponseCode(200).setBody("""{"startPageToken":"new_token_456"}""")
         )
 
         val fakeMediaDao = object : com.drivecinema.app.core.database.dao.MediaDao {
@@ -119,6 +110,8 @@ class DriveLibrarySyncEngineTest {
             override suspend fun getAllMovies() = emptyList<com.drivecinema.app.core.database.entity.MediaItemEntity>()
             override suspend fun getUnenrichedMovies() = emptyList<com.drivecinema.app.core.database.entity.MediaItemEntity>()
             override fun getAllSeriesFlow() = kotlinx.coroutines.flow.emptyFlow<List<com.drivecinema.app.core.database.entity.SeriesEntity>>()
+            override fun getEpisodeCountsFlow() = kotlinx.coroutines.flow.emptyFlow<List<com.drivecinema.app.core.database.dao.SeriesEpisodeCount>>()
+            override suspend fun updateFileInfo(sourceKey: String, sizeBytes: Long?, widthPx: Int?, heightPx: Int?, durationMs: Long?, container: String?) {}
             override suspend fun getAllSeries() = emptyList<com.drivecinema.app.core.database.entity.SeriesEntity>()
             override suspend fun getUnenrichedSeries() = emptyList<com.drivecinema.app.core.database.entity.SeriesEntity>()
             override fun searchMoviesFlow(query: String) = kotlinx.coroutines.flow.emptyFlow<List<com.drivecinema.app.core.database.entity.MediaItemEntity>>()
@@ -131,6 +124,7 @@ class DriveLibrarySyncEngineTest {
             override suspend fun markSourcesUnavailable(kind: com.drivecinema.app.core.database.entity.SourceKind) {}
             override suspend fun insertSourcesIfAbsent(sources: List<com.drivecinema.app.core.database.entity.MediaSourceEntity>) {}
             override suspend fun markSourcesAvailable(sourceKeys: List<String>, libraryRootId: String?, seenAt: Long) {}
+            override suspend fun getSourcesByKeys(sourceKeys: List<String>) = emptyList<com.drivecinema.app.core.database.entity.MediaSourceEntity>()
             override suspend fun refreshVisibilityFromSources() {}
             override fun getContinueWatchingFlow() = kotlinx.coroutines.flow.emptyFlow<List<com.drivecinema.app.core.database.dao.ContinueWatchingItem>>()
         }
@@ -146,6 +140,8 @@ class DriveLibrarySyncEngineTest {
             override suspend fun clearMetadata(key: String) {
                 savedToken = null
             }
+            override suspend fun getKeysWithPrefix(prefix: String) = emptyList<String>()
+            override suspend fun deleteWithPrefixUpTo(prefix: String, timestamp: Long) {}
         }
 
         val baseUrl = server.url("/drive/v3").toString().removeSuffix("/")
@@ -165,7 +161,7 @@ class DriveLibrarySyncEngineTest {
         )
 
         assertTrue("Fallback must succeed", result.isSuccess)
-        assertEquals("new_token_456", savedToken)
+        assertEquals("the 410 and one listing; no start-page-token request (N.1)", 2, server.requestCount)
         assertEquals(1, fakeMediaDao.inserted.size)
         assertEquals("m1", fakeMediaDao.inserted[0].id)
 
@@ -177,33 +173,24 @@ class DriveLibrarySyncEngineTest {
         val driveServer = okhttp3.mockwebserver.MockWebServer()
         driveServer.start()
 
-        // 1. Films folder listing: 1 movie
+        // One listing per folder level (Task N.1). 1. Films and Series: 1 movie, 1 series folder
         driveServer.enqueue(
             okhttp3.mockwebserver.MockResponse().setResponseCode(200).setBody(
-                """{"files":[{"id":"m1","name":"Dune Part Two (2024).mkv","mimeType":"video/x-matroska"}]}"""
+                """{"files":[{"id":"m1","name":"Dune Part Two (2024).mkv","mimeType":"video/x-matroska","parents":["f_films"]},""" +
+                    """{"id":"s1","name":"Breaking Bad","mimeType":"application/vnd.google-apps.folder","parents":["f_series"]}]}"""
             )
         )
-        // 2. Series folder listing: 1 series folder
+        // 2. Series folder children: Season 1 folder
         driveServer.enqueue(
             okhttp3.mockwebserver.MockResponse().setResponseCode(200).setBody(
-                """{"files":[{"id":"s1","name":"Breaking Bad","mimeType":"application/vnd.google-apps.folder"}]}"""
+                """{"files":[{"id":"season1","name":"Season 01","mimeType":"application/vnd.google-apps.folder","parents":["s1"]}]}"""
             )
         )
-        // 3. Series folder children: Season 1 folder
+        // 3. Season 1 children: Episode 1
         driveServer.enqueue(
             okhttp3.mockwebserver.MockResponse().setResponseCode(200).setBody(
-                """{"files":[{"id":"season1","name":"Season 01","mimeType":"application/vnd.google-apps.folder"}]}"""
+                """{"files":[{"id":"ep1","name":"Breaking.Bad.S01E01.mkv","mimeType":"video/x-matroska","parents":["season1"]}]}"""
             )
-        )
-        // 4. Season 1 children: Episode 1
-        driveServer.enqueue(
-            okhttp3.mockwebserver.MockResponse().setResponseCode(200).setBody(
-                """{"files":[{"id":"ep1","name":"Breaking.Bad.S01E01.mkv","mimeType":"video/x-matroska"}]}"""
-            )
-        )
-        // 5. startPageToken query
-        driveServer.enqueue(
-            okhttp3.mockwebserver.MockResponse().setResponseCode(200).setBody("""{"startPageToken":"token_123"}""")
         )
 
         val tmdbServer = okhttp3.mockwebserver.MockWebServer()
@@ -303,6 +290,8 @@ class DriveLibrarySyncEngineTest {
             override suspend fun getAllMovies() = items.values.filter { it.type == com.drivecinema.app.core.database.entity.MediaType.MOVIE }
             override suspend fun getUnenrichedMovies() = items.values.filter { it.type == com.drivecinema.app.core.database.entity.MediaType.MOVIE && it.tmdbId == null && !it.isDeleted }
             override fun getAllSeriesFlow() = kotlinx.coroutines.flow.emptyFlow<List<com.drivecinema.app.core.database.entity.SeriesEntity>>()
+            override fun getEpisodeCountsFlow() = kotlinx.coroutines.flow.emptyFlow<List<com.drivecinema.app.core.database.dao.SeriesEpisodeCount>>()
+            override suspend fun updateFileInfo(sourceKey: String, sizeBytes: Long?, widthPx: Int?, heightPx: Int?, durationMs: Long?, container: String?) {}
             override suspend fun getAllSeries() = seriesMap.values.toList()
             override suspend fun getUnenrichedSeries() = seriesMap.values.filter { it.tmdbId == null }
             override fun searchMoviesFlow(query: String) = kotlinx.coroutines.flow.emptyFlow<List<com.drivecinema.app.core.database.entity.MediaItemEntity>>()
@@ -315,6 +304,7 @@ class DriveLibrarySyncEngineTest {
             override suspend fun markSourcesUnavailable(kind: com.drivecinema.app.core.database.entity.SourceKind) {}
             override suspend fun insertSourcesIfAbsent(sources: List<com.drivecinema.app.core.database.entity.MediaSourceEntity>) {}
             override suspend fun markSourcesAvailable(sourceKeys: List<String>, libraryRootId: String?, seenAt: Long) {}
+            override suspend fun getSourcesByKeys(sourceKeys: List<String>) = emptyList<com.drivecinema.app.core.database.entity.MediaSourceEntity>()
             override suspend fun refreshVisibilityFromSources() {}
             override fun getContinueWatchingFlow() = kotlinx.coroutines.flow.emptyFlow<List<com.drivecinema.app.core.database.dao.ContinueWatchingItem>>()
         }
@@ -323,6 +313,8 @@ class DriveLibrarySyncEngineTest {
             override suspend fun setMetadata(metadata: com.drivecinema.app.core.database.entity.SyncMetadataEntity) {}
             override suspend fun getMetadata(key: String) = null
             override suspend fun clearMetadata(key: String) {}
+            override suspend fun getKeysWithPrefix(prefix: String) = emptyList<String>()
+            override suspend fun deleteWithPrefixUpTo(prefix: String, timestamp: Long) {}
         }
 
         val driveBaseUrl = driveServer.url("/drive/v3").toString().removeSuffix("/")
@@ -510,6 +502,8 @@ class DriveLibrarySyncEngineTest {
             override suspend fun getAllMovies() = itemsMap.values.filter { it.type == com.drivecinema.app.core.database.entity.MediaType.MOVIE }
             override suspend fun getUnenrichedMovies() = itemsMap.values.filter { it.type == com.drivecinema.app.core.database.entity.MediaType.MOVIE && it.tmdbId == null && !it.isDeleted }
             override fun getAllSeriesFlow() = kotlinx.coroutines.flow.emptyFlow<List<com.drivecinema.app.core.database.entity.SeriesEntity>>()
+            override fun getEpisodeCountsFlow() = kotlinx.coroutines.flow.emptyFlow<List<com.drivecinema.app.core.database.dao.SeriesEpisodeCount>>()
+            override suspend fun updateFileInfo(sourceKey: String, sizeBytes: Long?, widthPx: Int?, heightPx: Int?, durationMs: Long?, container: String?) {}
             override suspend fun getAllSeries() = seriesMap.values.toList()
             override suspend fun getUnenrichedSeries() = seriesMap.values.filter { it.tmdbId == null }
             override fun searchMoviesFlow(query: String) = kotlinx.coroutines.flow.emptyFlow<List<com.drivecinema.app.core.database.entity.MediaItemEntity>>()
@@ -522,6 +516,7 @@ class DriveLibrarySyncEngineTest {
             override suspend fun markSourcesUnavailable(kind: com.drivecinema.app.core.database.entity.SourceKind) {}
             override suspend fun insertSourcesIfAbsent(sources: List<com.drivecinema.app.core.database.entity.MediaSourceEntity>) {}
             override suspend fun markSourcesAvailable(sourceKeys: List<String>, libraryRootId: String?, seenAt: Long) {}
+            override suspend fun getSourcesByKeys(sourceKeys: List<String>) = emptyList<com.drivecinema.app.core.database.entity.MediaSourceEntity>()
             override suspend fun refreshVisibilityFromSources() {}
             override fun getContinueWatchingFlow() = kotlinx.coroutines.flow.emptyFlow<List<com.drivecinema.app.core.database.dao.ContinueWatchingItem>>()
         }
@@ -530,6 +525,8 @@ class DriveLibrarySyncEngineTest {
             override suspend fun setMetadata(metadata: com.drivecinema.app.core.database.entity.SyncMetadataEntity) {}
             override suspend fun getMetadata(key: String) = null
             override suspend fun clearMetadata(key: String) {}
+            override suspend fun getKeysWithPrefix(prefix: String) = emptyList<String>()
+            override suspend fun deleteWithPrefixUpTo(prefix: String, timestamp: Long) {}
         }
 
         val tmdbBaseUrl = tmdbServer.url("/3").toString().removeSuffix("/")

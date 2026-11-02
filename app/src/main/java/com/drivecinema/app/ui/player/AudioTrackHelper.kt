@@ -4,6 +4,7 @@ import androidx.media3.common.C
 import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
+import com.drivecinema.app.core.player.TrackLabels
 
 data class AudioTrackInfo(
     val groupIndex: Int = 0,
@@ -15,10 +16,13 @@ data class AudioTrackInfo(
     val sampleRate: Int = 48000,
     val isSupported: Boolean = true,
     val isSelected: Boolean = false,
+    /** P.8: "Hungarian · Magyar" ([TrackLabels.language]). */
     val languageDisplay: String = "English",
     val codecDisplay: String = "AAC",
     val channelsDisplay: String = "Stereo",
     val label: String = "English",
+    /** P.8: "AC-3 (Dolby Digital) · 5.1" ([TrackLabels.audioFormat]), the line under the language in the menu. */
+    val formatDisplay: String? = null,
     val index: Int = trackIndex,
     val mediaTrackGroup: androidx.media3.common.TrackGroup? = null
 )
@@ -73,6 +77,12 @@ object AudioTrackHelper {
         return tracks.size > 1
     }
 
+    /**
+     * The track that plays, from Media3's own per-group selection. A track's index is only unique inside its group:
+     * an MKV puts each audio track in its own group, so every track there has index 0 (P.8: two check marks).
+     */
+    fun playingTrack(tracks: List<AudioTrackInfo>): AudioTrackInfo? = tracks.firstOrNull { it.isSelected && it.isSupported }
+
     fun extractAudioTracks(tracks: Tracks): List<AudioTrackInfo> {
         val list = mutableListOf<AudioTrackInfo>()
         for ((groupIndex, groupInfo) in tracks.groups.withIndex()) {
@@ -102,10 +112,11 @@ object AudioTrackHelper {
                             sampleRate = format.sampleRate,
                             isSupported = isSupported,
                             isSelected = isSelected,
-                            languageDisplay = lang,
+                            languageDisplay = TrackLabels.language(format.language),
                             codecDisplay = codec,
                             channelsDisplay = channels,
                             label = displayLabel,
+                            formatDisplay = TrackLabels.audioFormat(format.sampleMimeType, format.channelCount),
                             index = i,
                             mediaTrackGroup = group
                         )
@@ -177,14 +188,6 @@ object AudioTrackHelper {
                         .build()
                 }
             }
-        }
-    }
-
-    fun selectAudioTrack(player: Player, trackIndex: Int) {
-        val audioTracks = extractAudioTracks(player.currentTracks)
-        val target = audioTracks.find { it.trackIndex == trackIndex }
-        if (target != null) {
-            selectAudioTrack(player, target)
         }
     }
 

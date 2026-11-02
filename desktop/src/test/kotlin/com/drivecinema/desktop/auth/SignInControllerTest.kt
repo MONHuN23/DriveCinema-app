@@ -89,4 +89,56 @@ class SignInControllerTest {
         // Generated from local.properties by the generateDesktopConfig task (values may be empty).
         assertTrue(DesktopOAuthConfig::class.java.getResource(DesktopOAuthConfig.RESOURCE) != null)
     }
+
+    @Test
+    fun writeAccessKeepsTheSameSessionAndAdoptsTheNewGrant() = runTest {
+        val granted = DesktopTokenProvider(
+            OAuthTokenClient(DesktopOAuthConfig("id", "secret")), "1//write", "ya29.w", Long.MAX_VALUE,
+            grantedScope = "${GoogleOAuth.DRIVE_READONLY_SCOPE} ${GoogleOAuth.DRIVE_SCOPE}"
+        )
+        var stored: String? = null
+        session.tokenProvider.onTokensChanged = { refresh, _, _ -> stored = refresh }
+        var onGranted = false
+        val controller = SignInController(
+            this, isConfigured = true, signIn = { session }, openBrowser = { true },
+            grantWriteAccess = { current, onUrl -> onUrl("https://accounts.google.com/w"); DesktopSession(current.user, granted) }
+        )
+        controller.startSignIn()
+        advanceUntilIdle()
+
+        controller.requestWriteAccess { onGranted = true }
+        advanceUntilIdle()
+
+        assertEquals(SignInUiState.SignedIn(session), controller.state.value)
+        assertTrue(session.tokenProvider.hasDriveWriteAccess)
+        assertEquals("1//write", stored)
+        assertTrue(onGranted)
+        assertEquals(WriteAccessState.Idle(), controller.writeAccess.value)
+    }
+
+    @Test
+    fun refusedWriteAccessShowsWhyAndChangesNothing() = runTest {
+        val controller = SignInController(
+            this, isConfigured = true, signIn = { session },
+            grantWriteAccess = { _, _ -> throw SignInException("Google did not grant write access") }
+        )
+        controller.startSignIn()
+        advanceUntilIdle()
+        controller.requestWriteAccess()
+        advanceUntilIdle()
+        assertEquals(WriteAccessState.Idle("Google did not grant write access"), controller.writeAccess.value)
+        assertEquals(false, session.tokenProvider.hasDriveWriteAccess)
+    }
+
+    @Test
+    fun removingWriteAccessRevokesAndSignsOut() = runTest {
+        val revoked = mutableListOf<String>()
+        val controller = SignInController(this, isConfigured = true, signIn = { session }, revoke = { revoked += it }, ioDispatcher = StandardTestDispatcher(testScheduler))
+        controller.startSignIn()
+        advanceUntilIdle()
+        controller.removeWriteAccessAndSignOut()
+        advanceUntilIdle()
+        assertEquals(listOf("1//r"), revoked)
+        assertEquals(SignInUiState.Idle(), controller.state.value)
+    }
 }

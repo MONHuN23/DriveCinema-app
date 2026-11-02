@@ -24,15 +24,24 @@ data class SignInOptions(
             "This TV has no Google Play Services, so Google sign-in is not available here. " +
                 "Sign in on your phone, then pair it with this TV."
 
+        const val TV_GOOGLE_SIGN_IN_UNAVAILABLE_NOTICE =
+            "Google sign-in isn't available on TVs yet. Sign in on your phone, then pair it with this TV."
+
         /**
-         * Phones sign in through the browser (AppAuth) and never need Play Services. TVs sign in through
-         * Play Services; without it (Fire TV, generic boxes) pairing with the phone is the only way in.
+         * Phones sign in through the browser (AppAuth) and never need Play Services. TVs always sign in by
+         * pairing with the phone (Task J.6): Google's Play Services sign-in on the TV is refused for this app
+         * ("This OAuth client is not permitted to request the following scopes", 2026-10-20), and without
+         * Play Services (Fire TV, generic boxes) it isn't possible at all.
          */
-        fun forDevice(isTv: Boolean, playServicesAvailable: Boolean): SignInOptions =
-            if (isTv && !playServicesAvailable) {
+        fun forDevice(isTv: Boolean, playServicesAvailable: Boolean): SignInOptions = when {
+            !isTv -> SignInOptions(showGoogleSignIn = true, pairingIsPrimary = false, notice = null)
+            !playServicesAvailable ->
                 SignInOptions(showGoogleSignIn = false, pairingIsPrimary = true, notice = NO_PLAY_SERVICES_NOTICE)
-            } else {
-                SignInOptions(showGoogleSignIn = true, pairingIsPrimary = false, notice = null)
-            }
+            else -> SignInOptions(
+                showGoogleSignIn = false,
+                pairingIsPrimary = true,
+                notice = TV_GOOGLE_SIGN_IN_UNAVAILABLE_NOTICE
+            )
+        }
     }
 }

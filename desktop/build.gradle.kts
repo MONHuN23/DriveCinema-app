@@ -33,6 +33,19 @@ val generateDesktopConfig by tasks.registering {
 }
 sourceSets.main { resources.srcDir(generateDesktopConfig) }
 
+// An installer without the OAuth client can't sign in at all, so packaging fails instead of shipping it.
+// `run` still works without it (the sign-in screen then offers only the layout preview).
+val desktopOAuthKeys = listOf("GOOGLE_DESKTOP_CLIENT_ID", "GOOGLE_DESKTOP_CLIENT_SECRET")
+tasks.matching { it.name.startsWith("package") || it.name.startsWith("create") && it.name.endsWith("Distributable") }
+  .configureEach {
+    val missing = desktopOAuthKeys.filter { localValue(it).isBlank() }
+    doFirst {
+      if (missing.isNotEmpty()) {
+        throw GradleException("Missing ${missing.joinToString()} in local.properties (see DESKTOP.md): refusing to package a build that can't sign in.")
+      }
+    }
+  }
+
 dependencies {
   implementation(project(":shared"))
   implementation(compose.desktop.currentOs)
@@ -58,7 +71,7 @@ compose.desktop {
     nativeDistributions {
       targetFormats(TargetFormat.Deb, TargetFormat.Rpm, TargetFormat.Msi)
       packageName = "DriveCinema"
-      packageVersion = "1.1.0"
+      packageVersion = "1.3.0"
       description = "Stream your movie and TV library from Google Drive"
       vendor = "DriveCinema"
       // jlink keeps only these JDK modules: Swing/AWT (Compose), the loopback sign-in/stream servers,

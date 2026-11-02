@@ -15,6 +15,15 @@ sealed interface PlaybackSource {
         override val progressKey: String get() = fileId
     }
 
+    /**
+     * Task I.2: a file on a paired PC, streamed from [url] (HTTPS on the home network or VPN); progress keyed by its
+     * stable `dchost://` source key, so it survives the PC changing address.
+     */
+    data class Host(val sourceKey: String, val url: String) : PlaybackSource {
+        override val uri: Uri get() = Uri.parse(url)
+        override val progressKey: String get() = sourceKey
+    }
+
     /** Local document from the Storage Access Framework; progress keyed by its content URI. */
     data class Local(val contentUri: String) : PlaybackSource {
         override val uri: Uri get() = Uri.parse(contentUri)
@@ -31,7 +40,19 @@ object PlayerUriBuilder {
      * Resolves the player intent extras. A local URI is only accepted with the `content://` scheme
      * (SAF documents); anything else is ignored so the player never opens arbitrary files or URLs.
      */
-    fun resolveSource(driveFileId: String?, localContentUri: String?): PlaybackSource? {
+    fun resolveSource(
+        driveFileId: String?,
+        localContentUri: String?,
+        hostSourceKey: String? = null,
+        hostUrl: String? = null
+    ): PlaybackSource? {
+        // A PC copy needs a valid dchost:// key and an https URL; the URL is only ever opened with the PC's pinned client.
+        if (hostSourceKey != null && hostUrl != null &&
+            com.drivecinema.app.core.host.HostProtocol.parse(hostSourceKey)?.second == "file" &&
+            Uri.parse(hostUrl).scheme == "https"
+        ) {
+            return PlaybackSource.Host(hostSourceKey, hostUrl)
+        }
         if (!localContentUri.isNullOrEmpty() &&
             Uri.parse(localContentUri).scheme == ContentResolver.SCHEME_CONTENT
         ) {

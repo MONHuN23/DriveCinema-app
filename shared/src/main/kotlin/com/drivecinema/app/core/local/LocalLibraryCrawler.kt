@@ -1,6 +1,7 @@
 package com.drivecinema.app.core.local
 
 import com.drivecinema.app.core.metadata.MediaFilenameParser
+import com.drivecinema.app.core.metadata.SeriesLayout
 import com.drivecinema.app.core.sync.FolderQueueCrawler
 
 /** One entry of a local folder listing (Android: Storage Access Framework; desktop: the file system). */
@@ -91,15 +92,13 @@ class LocalLibraryCrawler(private val source: DocumentTreeSource) {
                 val episodes = mutableListOf<LocalEpisode>()
                 for (child in source.listChildren(treeUri, showFolder.documentId)) {
                     if (child.isFolder) {
-                        val season = parseSeasonNumber(child.name)
                         for (file in source.listChildren(treeUri, child.documentId).filter { isVideo(it) }) {
-                            val parsed = MediaFilenameParser.parseEpisode(file.name)
-                            episodes += LocalEpisode(toVideo(treeUri, file), season, parsed.episode, parsed.episodeTitle)
+                            val key = SeriesLayout.episodeKey(child.name, file.name)
+                            episodes += LocalEpisode(toVideo(treeUri, file), key.season, key.episode, key.episodeTitle)
                         }
                     } else if (isVideo(child)) {
-                        val parsed = MediaFilenameParser.parseEpisode(child.name)
-                        val season = if (parsed.cleanShowName.isNotEmpty() && parsed.season > 0) parsed.season else 1
-                        episodes += LocalEpisode(toVideo(treeUri, child), season, parsed.episode, parsed.episodeTitle)
+                        val key = SeriesLayout.episodeKey(null, child.name)
+                        episodes += LocalEpisode(toVideo(treeUri, child), key.season, key.episode, key.episodeTitle)
                     }
                 }
                 shows += LocalShow(showFolder.name, parsedShow.cleanTitle, parsedShow.year, episodes)
@@ -119,6 +118,4 @@ class LocalLibraryCrawler(private val source: DocumentTreeSource) {
 
     private fun toVideo(treeUri: String, doc: LocalDocument) =
         LocalVideo(source.documentUri(treeUri, doc.documentId), doc.name, doc.sizeBytes)
-
-    private fun parseSeasonNumber(folderName: String): Int = MediaFilenameParser.parseSeasonFolder(folderName)
 }

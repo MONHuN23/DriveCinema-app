@@ -28,6 +28,10 @@ class GoogleAuthManager {
     companion object {
         const val TV_ACCOUNT_PREFIX = "tv_account:"
         const val DRIVE_READONLY_SCOPE = "https://www.googleapis.com/auth/drive.readonly"
+        /** Milestone Q: the hidden app folder, asked only when "Sync with my devices" is turned on. */
+        const val DRIVE_APPDATA_SCOPE = com.drivecinema.app.core.devicesync.AppDataClient.SCOPE
+        val SIGN_IN_SCOPES = listOf(DRIVE_READONLY_SCOPE)
+        val DEVICE_SYNC_SCOPES = listOf(DRIVE_READONLY_SCOPE, DRIVE_APPDATA_SCOPE)
     }
 
     val serviceConfig: AuthorizationServiceConfiguration = AuthorizationServiceConfiguration(
@@ -35,11 +39,20 @@ class GoogleAuthManager {
         Uri.parse("https://oauth2.googleapis.com/token")
     )
 
-    fun buildAuthorizationRequest(clientId: String): AuthorizationRequest {
+    /**
+     * The phone's sign-in. Milestone Q: with [scopes] beyond read-only (turning device sync on), the grant is added to
+     * the existing one (`include_granted_scopes`) and [loginHint] preselects the signed-in account.
+     */
+    fun buildAuthorizationRequest(
+        clientId: String,
+        scopes: List<String> = SIGN_IN_SCOPES,
+        loginHint: String? = null
+    ): AuthorizationRequest {
         val redirectUri = Uri.parse("com.drivecinema.app:/oauth2redirect")
-        val extraParams = mapOf(
-            "access_type" to "offline"
-        )
+        val extraParams = buildMap {
+            put("access_type", "offline")
+            if (scopes != SIGN_IN_SCOPES) put("include_granted_scopes", "true")
+        }
 
         return AuthorizationRequest.Builder(
             serviceConfig,
@@ -47,15 +60,21 @@ class GoogleAuthManager {
             ResponseTypeValues.CODE,
             redirectUri
         )
-            .setScope(DRIVE_READONLY_SCOPE)
+            .setScopes(scopes)
             .setPrompt("consent")
             .setAdditionalParameters(extraParams)
+            .apply { if (!loginHint.isNullOrEmpty()) setLoginHint(loginHint) }
             .build()
     }
 
-    fun createAuthRequestIntent(context: Context, clientId: String): Intent {
+    fun createAuthRequestIntent(
+        context: Context,
+        clientId: String,
+        scopes: List<String> = SIGN_IN_SCOPES,
+        loginHint: String? = null
+    ): Intent {
         val authService = AuthorizationService(context)
-        val request = buildAuthorizationRequest(clientId)
+        val request = buildAuthorizationRequest(clientId, scopes, loginHint)
         return try {
             authService.getAuthorizationRequestIntent(request)
         } finally {

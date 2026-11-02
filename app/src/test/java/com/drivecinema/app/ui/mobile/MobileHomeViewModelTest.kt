@@ -59,6 +59,8 @@ class MobileHomeViewModelTest {
         override suspend fun getAllMovies(): List<com.drivecinema.app.core.database.entity.MediaItemEntity> = emptyList()
         override suspend fun getUnenrichedMovies(): List<com.drivecinema.app.core.database.entity.MediaItemEntity> = emptyList()
         override fun getAllSeriesFlow(): kotlinx.coroutines.flow.Flow<List<com.drivecinema.app.core.database.entity.SeriesEntity>> = kotlinx.coroutines.flow.flowOf(emptyList())
+        override fun getEpisodeCountsFlow(): kotlinx.coroutines.flow.Flow<List<com.drivecinema.app.core.database.dao.SeriesEpisodeCount>> = kotlinx.coroutines.flow.flowOf(emptyList())
+        override suspend fun updateFileInfo(sourceKey: String, sizeBytes: Long?, widthPx: Int?, heightPx: Int?, durationMs: Long?, container: String?) {}
         override suspend fun getAllSeries(): List<com.drivecinema.app.core.database.entity.SeriesEntity> = emptyList()
         override fun getEpisodesForSeriesFlow(seriesId: String): kotlinx.coroutines.flow.Flow<List<com.drivecinema.app.core.database.entity.MediaItemEntity>> = kotlinx.coroutines.flow.flowOf(emptyList())
         override suspend fun getEpisodesForSeries(seriesId: String): List<com.drivecinema.app.core.database.entity.MediaItemEntity> = emptyList()
@@ -68,6 +70,7 @@ class MobileHomeViewModelTest {
         override suspend fun markSourcesUnavailable(kind: com.drivecinema.app.core.database.entity.SourceKind) {}
         override suspend fun insertSourcesIfAbsent(sources: List<com.drivecinema.app.core.database.entity.MediaSourceEntity>) {}
         override suspend fun markSourcesAvailable(sourceKeys: List<String>, libraryRootId: String?, seenAt: Long) {}
+        override suspend fun getSourcesByKeys(sourceKeys: List<String>) = emptyList<com.drivecinema.app.core.database.entity.MediaSourceEntity>()
         override suspend fun refreshVisibilityFromSources() {}
         override fun getContinueWatchingFlow(): kotlinx.coroutines.flow.Flow<List<ContinueWatchingItem>> = kotlinx.coroutines.flow.flowOf(emptyList())
         override fun searchMoviesFlow(query: String): kotlinx.coroutines.flow.Flow<List<com.drivecinema.app.core.database.entity.MediaItemEntity>> = kotlinx.coroutines.flow.flowOf(emptyList())

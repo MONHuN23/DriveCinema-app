@@ -3,7 +3,7 @@ package com.drivecinema.app.core.lifecycle
 import android.content.Context
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
-import com.drivecinema.app.AppScreen
+import com.drivecinema.app.ui.navigation.Screen
 import com.drivecinema.app.core.database.DriveCinemaDatabase
 import com.drivecinema.app.core.database.entity.MediaItemEntity
 import com.drivecinema.app.core.database.entity.MediaType
@@ -58,11 +58,11 @@ class AccountLibraryLifecycleTest {
         // -------------------------------------------------------------
         // Step 1: Clean Install / Initial State
         // -------------------------------------------------------------
-        var currentScreen: AppScreen = AppScreen.SignIn
+        var currentScreen: Screen = Screen.SignIn
         var cachedToken: String? = null
         var storedCredentials: AuthCredentials? = null
 
-        assertEquals(AppScreen.SignIn, currentScreen)
+        assertEquals(Screen.SignIn, currentScreen)
         assertNull("No token on cold start", cachedToken)
         assertNull("No credentials on clean install", storedCredentials)
         assertTrue("Database is empty on fresh install", mediaDao.getAllMovies().isEmpty())
@@ -124,8 +124,8 @@ class AccountLibraryLifecycleTest {
         mediaDao.insertSingleSeries(series1)
 
         // UI transitions to Home
-        currentScreen = AppScreen.Home
-        assertEquals(AppScreen.Home, currentScreen)
+        currentScreen = Screen.Home
+        assertEquals(Screen.Home, currentScreen)
         assertEquals(2, mediaDao.getAllMovies().size)
         assertEquals(1, mediaDao.getAllSeries().size)
 
@@ -150,12 +150,12 @@ class AccountLibraryLifecycleTest {
         // Simulating MainActivity.handleSignOut()
         cachedToken = null
         storedCredentials = null
-        currentScreen = AppScreen.SignIn
+        currentScreen = Screen.SignIn
 
         // Verify session tokens are erased and UI returns to SignIn
         assertNull("OAuth token cleared", cachedToken)
         assertNull("Credentials cleared", storedCredentials)
-        assertEquals(AppScreen.SignIn, currentScreen)
+        assertEquals(Screen.SignIn, currentScreen)
 
         // CRITICAL INVARIANT: SQLite database MUST remain completely intact!
         val preservedMovies = mediaDao.getAllMovies()
@@ -179,8 +179,8 @@ class AccountLibraryLifecycleTest {
         )
 
         // With rootFolderId present, instantly proceed to Home without re-crawling
-        currentScreen = AppScreen.Home
-        assertEquals(AppScreen.Home, currentScreen)
+        currentScreen = Screen.Home
+        assertEquals(Screen.Home, currentScreen)
         assertEquals(2, mediaDao.getAllMovies().size)
 
         // Resume playback directly from saved position

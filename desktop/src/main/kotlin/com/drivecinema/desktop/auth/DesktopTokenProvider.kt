@@ -12,6 +12,8 @@ class DesktopTokenProvider(
     accessToken: String,
     expiresAtMillis: Long,
     private val clock: () -> Long = System::currentTimeMillis,
+    /** Scopes Google granted, as returned with the tokens; null until the first refresh after a restart. */
+    grantedScope: String? = null,
     /** Called after every refresh (new access token, and the refresh token if Google rotated it). */
     @Volatile var onTokensChanged: (refreshToken: String, accessToken: String, expiresAtMillis: Long) -> Unit = { _, _, _ -> }
 ) : TokenProvider {
@@ -20,6 +22,11 @@ class DesktopTokenProvider(
         private set
     @Volatile private var accessToken: String = accessToken
     @Volatile private var expiresAtMillis: Long = expiresAtMillis
+    @Volatile var grantedScope: String? = grantedScope
+        private set
+
+    /** Task I.1: whether this sign-in may write to Drive (known after the first token refresh). */
+    val hasDriveWriteAccess: Boolean get() = GoogleOAuth.hasDriveWriteAccess(grantedScope)
 
     override fun getAccessToken(): String {
         if (accessToken.isNotEmpty() && clock() < expiresAtMillis - EXPIRY_MARGIN_MS) return accessToken
@@ -33,8 +40,22 @@ class DesktopTokenProvider(
         accessToken = tokens.accessToken
         expiresAtMillis = clock() + tokens.expiresInSeconds * 1000L
         tokens.refreshToken?.let { refreshToken = it }
+        tokens.scope?.let { grantedScope = it }
         onTokensChanged(refreshToken, accessToken, expiresAtMillis)
         return accessToken
+    }
+
+    /**
+     * Task I.1: takes over the tokens of a new grant for the same account (write access added), so the session and
+     * everything holding this provider keep working; [onTokensChanged] stores the new refresh token.
+     */
+    @Synchronized
+    fun adoptGrant(other: DesktopTokenProvider) {
+        refreshToken = other.refreshToken
+        accessToken = other.accessToken
+        expiresAtMillis = other.expiresAtMillis
+        grantedScope = other.grantedScope
+        onTokensChanged(refreshToken, accessToken, expiresAtMillis)
     }
 
     companion object {

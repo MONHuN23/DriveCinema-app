@@ -50,6 +50,8 @@ class SearchViewModelTest {
         override suspend fun getAllMovies(): List<MediaItemEntity> = testMovies
         override suspend fun getUnenrichedMovies(): List<MediaItemEntity> = testMovies.filter { it.tmdbId == null }
         override fun getAllSeriesFlow(): Flow<List<SeriesEntity>> = flowOf(testSeries)
+        override fun getEpisodeCountsFlow(): Flow<List<com.drivecinema.app.core.database.dao.SeriesEpisodeCount>> = flowOf(emptyList())
+        override suspend fun updateFileInfo(sourceKey: String, sizeBytes: Long?, widthPx: Int?, heightPx: Int?, durationMs: Long?, container: String?) {}
         override suspend fun getAllSeries(): List<SeriesEntity> = testSeries
         override suspend fun getUnenrichedSeries(): List<SeriesEntity> = testSeries.filter { it.tmdbId == null }
         override fun getEpisodesForSeriesFlow(seriesId: String): Flow<List<MediaItemEntity>> = flowOf(emptyList())
@@ -60,6 +62,7 @@ class SearchViewModelTest {
         override suspend fun markSourcesUnavailable(kind: com.drivecinema.app.core.database.entity.SourceKind) {}
         override suspend fun insertSourcesIfAbsent(sources: List<com.drivecinema.app.core.database.entity.MediaSourceEntity>) {}
         override suspend fun markSourcesAvailable(sourceKeys: List<String>, libraryRootId: String?, seenAt: Long) {}
+        override suspend fun getSourcesByKeys(sourceKeys: List<String>) = emptyList<com.drivecinema.app.core.database.entity.MediaSourceEntity>()
         override suspend fun refreshVisibilityFromSources() {}
         override fun getContinueWatchingFlow(): Flow<List<ContinueWatchingItem>> = flowOf(emptyList())
 

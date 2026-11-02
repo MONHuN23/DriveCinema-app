@@ -32,7 +32,7 @@ class CrawlCancellationTest {
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse {
                 val q = request.requestUrl?.queryParameter("q").orEmpty()
-                return if (q.startsWith("'films'")) {
+                return if (FakeDriveListing.folderIds(q) == listOf("films")) {
                     firstRequestSeen.complete(Unit)
                     releaseFirstResponse.await(5, TimeUnit.SECONDS)
                     // Three sub-folders: a crawl that ignores cancellation lists all of them.

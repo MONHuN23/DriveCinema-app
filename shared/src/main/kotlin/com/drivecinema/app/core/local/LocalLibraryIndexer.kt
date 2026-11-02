@@ -37,7 +37,8 @@ class LocalLibraryIndexer(
 ) {
     private val dao get() = db.mediaSourceDao()
 
-    suspend fun indexFolder(treeUri: String): LocalIndexResult {
+    /** [kind]: LOCAL for this device's folders, HOST for a paired PC's shared folders (Task I.2); same rules for both. */
+    suspend fun indexFolder(treeUri: String, kind: SourceKind = SourceKind.LOCAL): LocalIndexResult {
         val tree = treeUri
         val library = crawler.crawl(treeUri) // throws on any listing failure → nothing changes
         if (library.isEmpty) return LocalIndexResult(0, 0, 0, 0)
@@ -55,11 +56,12 @@ class LocalLibraryIndexer(
             val known = allKeys.chunked(500).flatMap { dao.getExistingSourceKeys(it) }.toSet()
             val movies = dao.getAllMovieItems()
             val seriesRows = dao.getAllSeriesRows()
+            val visibleSeriesIds = dao.getVisibleSeriesIds().toSet()
 
             fun source(video: LocalVideo, itemId: String) = MediaSourceEntity(
                 sourceKey = video.sourceKey,
                 mediaItemId = itemId,
-                kind = SourceKind.LOCAL,
+                kind = kind,
                 libraryRootId = tree,
                 sizeBytes = video.sizeBytes,
                 lastSeenAt = now
@@ -67,7 +69,7 @@ class LocalLibraryIndexer(
 
             for (film in library.films.filter { it.sourceKey !in known }) {
                 val parsed = com.drivecinema.app.core.metadata.MediaFilenameParser.parseMovie(film.fileName)
-                val sameTitle = movies.filter { normalize(it.title) == normalize(parsed.cleanTitle) }
+                val sameTitle = preferVisible(movies.filter { normalize(it.title) == normalize(parsed.cleanTitle) }) { !it.isDeleted }
                 val candidates = when {
                     parsed.year != null -> sameTitle.filter { it.year == parsed.year }.ifEmpty { sameTitle.filter { it.year == null } }
                     else -> sameTitle
@@ -95,14 +97,16 @@ class LocalLibraryIndexer(
             }
 
             for (show in library.shows) {
-                val matchingSeries = seriesRows.filter {
+                val matchingSeries = preferVisible(seriesRows.filter {
                     normalize(it.title) == normalize(show.title) && (show.year == null || it.year == null || it.year == show.year)
-                }
-                val existingSeries = matchingSeries.singleOrNull()
+                }) { it.id in visibleSeriesIds }
+                // A real (Drive) show wins over a show this app made from file names earlier.
+                val existingSeries = matchingSeries.singleOrNull() ?: matchingSeries.filterNot { isAppMade(it.id) }.singleOrNull()
                 val seriesId = existingSeries?.id ?: localSeriesId(tree, show.folderName).also { id ->
                     newSeries += SeriesEntity(id = id, title = show.title, year = show.year)
                 }
-                val existingEpisodes = matchingSeries.flatMap { dao.getAllEpisodesOfSeries(it.id) }
+                val existingEpisodes = existingSeries?.let { dao.getAllEpisodesOfSeries(it.id) }
+                    ?: matchingSeries.flatMap { dao.getAllEpisodesOfSeries(it.id) }
 
                 for (ep in show.episodes.filter { it.video.sourceKey !in known }) {
                     val candidates = existingEpisodes.filter { it.seasonNumber == ep.season && it.episodeNumber == ep.episode }
@@ -139,7 +143,9 @@ class LocalLibraryIndexer(
                 dao.updateTitle(localId(ep.video.sourceKey), ep.title ?: "Episode ${ep.episode}")
             }
 
-            dao.markLocalTreeUnavailable(tree)
+            linked += mergeIntoRealTitles(library, known, movies, seriesRows, visibleSeriesIds)
+
+            dao.markTreeUnavailable(kind, tree)
             dao.insertSeriesIfAbsent(newSeries)
             dao.insertItemsIfAbsent(newItems)
             dao.insertSourcesIfAbsent(newSources)
@@ -159,6 +165,68 @@ class LocalLibraryIndexer(
             dao.refreshVisibilityFromSources()
         }
     }
+
+    /**
+     * Late merge: a copy indexed into a title this app made itself (e.g. before its Drive copy was synced) joins the real
+     * title once the match is unambiguous: a film by title + year, an episode by show + season + episode. Found on the
+     * device: "Avatar Seven Havens" episode 1 from the PC stayed a show of its own after the Drive show appeared.
+     * Ambiguous matches (the only ones that go to "Review possible duplicates") are never merged here, so a merge the
+     * user rejected stays rejected. Moving a source keeps its watch history (progress is keyed by the copy).
+     */
+    private suspend fun mergeIntoRealTitles(
+        library: LocalLibrary,
+        known: Set<String>,
+        movies: List<MediaItemEntity>,
+        seriesRows: List<SeriesEntity>,
+        visibleSeriesIds: Set<String>
+    ): Int {
+        val undecided = dao.getPendingMatches().map { it.sourceKey }.toSet()
+        suspend fun appMadeItemOf(sourceKey: String): String? =
+            if (sourceKey !in known || sourceKey in undecided) null
+            else dao.sourceItemId(sourceKey)?.takeIf { isAppMade(it) }
+        var merged = 0
+        for (film in library.films) {
+            val itemId = appMadeItemOf(film.sourceKey) ?: continue
+            val parsed = com.drivecinema.app.core.metadata.MediaFilenameParser.parseMovie(film.fileName)
+            val year = parsed.year ?: continue
+            val target = movies.filter {
+                !it.isDeleted && !isAppMade(it.id) && it.year == year && normalize(it.title) == normalize(parsed.cleanTitle)
+            }.singleOrNull() ?: continue
+            if (target.id != itemId) {
+                dao.relinkSource(film.sourceKey, target.id)
+                merged++
+            }
+        }
+        for (show in library.shows) {
+            val realSeries = seriesRows.filter {
+                !isAppMade(it.id) && it.id in visibleSeriesIds && normalize(it.title) == normalize(show.title) &&
+                    (show.year == null || it.year == null || it.year == show.year)
+            }.singleOrNull() ?: continue
+            val realEpisodes = dao.getAllEpisodesOfSeries(realSeries.id).filter { !isAppMade(it.id) }
+            for (ep in show.episodes) {
+                val itemId = appMadeItemOf(ep.video.sourceKey) ?: continue
+                val twin = realEpisodes.filter { it.seasonNumber == ep.season && it.episodeNumber == ep.episode }
+                when {
+                    twin.size == 1 -> {
+                        dao.relinkSource(ep.video.sourceKey, twin[0].id)
+                        merged++
+                    }
+                    twin.isEmpty() -> dao.moveToSeries(itemId, realSeries.id)
+                }
+            }
+        }
+        return merged
+    }
+
+    private fun isAppMade(id: String) = id.startsWith(LOCAL_ID_PREFIX)
+
+    /**
+     * Matches against titles that are visible right now; hidden leftovers (a deleted film, a show folder merged into
+     * another on Drive) only count when nothing visible matches, e.g. to bring a hidden title back with its history.
+     * Found on the device: an emptied second "Westworld" made the match ambiguous, so a PC copy became a duplicate show.
+     */
+    private fun <T> preferVisible(matches: List<T>, isVisible: (T) -> Boolean): List<T> =
+        matches.filter(isVisible).ifEmpty { matches }
 
     companion object {
         const val LOCAL_ID_PREFIX = com.drivecinema.app.core.player.LocalIds.PREFIX

@@ -70,8 +70,9 @@ class LibraryServiceTest {
                     "name = 'Streaming'" in q -> files(streamingSearch)
                     "'root' in parents" in q -> files(rootFolders)
                     else -> {
-                        val id = Regex("""'([^']+)' in parents""").find(q)?.groupValues?.get(1)
-                        if (id in failing) MockResponse().setResponseCode(500) else files(children[id] ?: emptyList())
+                        val ids = FakeDriveListing.folderIds(q)
+                        if (ids.any { it in failing }) MockResponse().setResponseCode(500)
+                        else ok(FakeDriveListing.body(ids) { children[it] ?: emptyList() })
                     }
                 }
             }
@@ -134,6 +135,7 @@ class LibraryServiceTest {
         val choosing = service.await { it is LibraryState.ChoosingFolder && !it.isLoading } as LibraryState.ChoosingFolder
         assertEquals(listOf("Documents", "My Movies"), choosing.sections.mine.map { it.name })
         assertEquals(false, choosing.canCancel)
+        assertNull(choosing.currentFolderId)
 
         service.chooseFolder(DriveFolder("other", "My Movies"))
         service.await(::readyAndIdle)
@@ -166,6 +168,8 @@ class LibraryServiceTest {
         service.openFolderPicker()
         val picker = service.await { it is LibraryState.ChoosingFolder && !it.isLoading } as LibraryState.ChoosingFolder
         assertTrue(picker.canCancel)
+        // The picker tags the library in use as "Current".
+        assertEquals("other", picker.currentFolderId)
         service.closeFolderPicker()
         assertEquals(LibraryState.Ready("My Movies"), service.state.value)
     }

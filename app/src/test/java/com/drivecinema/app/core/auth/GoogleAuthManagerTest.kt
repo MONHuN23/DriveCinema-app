@@ -22,6 +22,26 @@ class GoogleAuthManagerTest {
     }
 
     @Test
+    fun theNormalSignInStaysReadOnlyWithoutIncrementalGrant() {
+        val request = GoogleAuthManager().buildAuthorizationRequest("id")
+        assertEquals(null, request.additionalParameters["include_granted_scopes"])
+        assertEquals(null, request.loginHint)
+    }
+
+    /** Milestone Q: turning device sync on adds the app folder scope to the same account's grant. */
+    @Test
+    fun theDeviceSyncRequestAddsTheAppFolderScopeForTheSignedInAccount() {
+        val request = GoogleAuthManager().buildAuthorizationRequest("id", GoogleAuthManager.DEVICE_SYNC_SCOPES, "me@example.com")
+        assertEquals(
+            setOf("https://www.googleapis.com/auth/drive.readonly", "https://www.googleapis.com/auth/drive.appdata"),
+            request.scopeSet
+        )
+        assertEquals("true", request.additionalParameters["include_granted_scopes"])
+        assertEquals("offline", request.additionalParameters["access_type"])
+        assertEquals("me@example.com", request.loginHint)
+    }
+
+    @Test
     fun testTvSignInOptionsHasDriveScopeAndEmail() {
         val manager = GoogleAuthManager()
         val options = manager.buildTvSignInOptions()

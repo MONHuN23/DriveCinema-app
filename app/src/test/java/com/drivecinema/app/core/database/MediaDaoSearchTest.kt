@@ -36,6 +36,14 @@ class MediaDaoSearchTest {
         db.close()
     }
 
+    /** A show is listed only while it has a playable episode, so every test show gets one. */
+    private suspend fun seriesWithEpisodes(vararg series: SeriesEntity) {
+        db.mediaDao().insertSeries(series.toList())
+        db.mediaDao().insertMediaItems(series.map {
+            MediaItemEntity(id = "ep-${it.id}", type = MediaType.EPISODE, title = "Pilot", parentFolderId = it.id, seriesId = it.id, seasonNumber = 1, episodeNumber = 1)
+        })
+    }
+
     @Test
     fun testSearchMoviesReturnsMatchingTitlesOnly() = runBlocking {
         val mediaDao = db.mediaDao()
@@ -90,12 +98,10 @@ class MediaDaoSearchTest {
     fun testSearchSeriesReturnsMatchingTitles() = runBlocking {
         val mediaDao = db.mediaDao()
 
-        mediaDao.insertSeries(
-            listOf(
-                SeriesEntity(id = "s1", title = "Breaking Bad"),
-                SeriesEntity(id = "s2", title = "Better Call Saul"),
-                SeriesEntity(id = "s3", title = "Dark")
-            )
+        seriesWithEpisodes(
+            SeriesEntity(id = "s1", title = "Breaking Bad"),
+            SeriesEntity(id = "s2", title = "Better Call Saul"),
+            SeriesEntity(id = "s3", title = "Dark")
         )
 
         val results = mediaDao.searchSeriesFlow("Bad").first()
@@ -113,17 +119,26 @@ class MediaDaoSearchTest {
                 MediaItemEntity(id = "m2", type = MediaType.MOVIE, title = "Movie B", parentFolderId = "f1")
             )
         )
-        mediaDao.insertSeries(
-            listOf(
-                SeriesEntity(id = "s1", title = "Series A"),
-                SeriesEntity(id = "s2", title = "Series B")
-            )
-        )
+        seriesWithEpisodes(SeriesEntity(id = "s1", title = "Series A"), SeriesEntity(id = "s2", title = "Series B"))
 
         val movies = mediaDao.searchMoviesFlow("").first()
         val series = mediaDao.searchSeriesFlow("").first()
 
         assertEquals(2, movies.size)
         assertEquals(2, series.size)
+    }
+
+    @Test
+    fun aShowWithNoPlayableEpisodeIsNotListed() = runBlocking {
+        // Found on the device: after a show folder was merged into another on Drive, its empty row still showed up.
+        val mediaDao = db.mediaDao()
+        seriesWithEpisodes(SeriesEntity(id = "kept", title = "Westworld", year = 2016))
+        mediaDao.insertSeries(listOf(SeriesEntity(id = "emptied", title = "Westworld", year = 2016)))
+        mediaDao.insertMediaItems(listOf(
+            MediaItemEntity(id = "gone", type = MediaType.EPISODE, title = "E1", parentFolderId = "emptied", seriesId = "emptied", isDeleted = true)
+        ))
+
+        assertEquals(listOf("kept"), mediaDao.getAllSeriesFlow().first().map { it.id })
+        assertEquals(listOf("kept"), mediaDao.searchSeriesFlow("West").first().map { it.id })
     }
 }

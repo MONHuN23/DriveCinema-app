@@ -17,15 +17,17 @@ distributed under GPL-compatible terms. The source code of DriveCinema itself st
 | Kotlin standard library, kotlinx.coroutines | Language and concurrency (all apps) | Apache-2.0 |
 | AndroidX: Core, Activity, Lifecycle, Navigation 3, Compose, Compose for TV, Room, SQLite | Android app and shared database | Apache-2.0 |
 | AndroidX Media3 (ExoPlayer, OkHttp data source, UI) | Android video playback | Apache-2.0 |
+| Jellyfin Media3 FFmpeg decoder (`org.jellyfin.media3:media3-ffmpeg-decoder`), with FFmpeg | Android software audio decoding (AC-3, E-AC-3, DTS, TrueHD) where the device has no decoder | GPL-3.0 (as published by Jellyfin; FFmpeg itself is LGPL-2.1-or-later) |
 | Compose Multiplatform (JetBrains) | Desktop user interface | Apache-2.0 |
+| Material Icons (Google), path data copied into `shared/.../ui/icons/MaterialIconPaths.kt` | Icons in all apps (player controls, menus, buttons) | Apache-2.0 |
 | OkHttp (Square) | HTTP for Google Drive and TMDB | Apache-2.0 |
 | AppAuth for Android (OpenID Foundation) | Google sign-in on Android | Apache-2.0 |
 | Coil | Poster and backdrop images on Android | Apache-2.0 |
 | JSON-java (`org.json`) | JSON parsing on desktop (built into Android) | Public domain |
 | Bouncy Castle (`bcprov-jdk18on`) | SRP-6a phone ↔ TV pairing | Bouncy Castle Licence (MIT-style) |
-| JNA (`jna-jpms`) | Linux keyring and libVLC access on desktop | Apache-2.0 or LGPL-2.1 (dual) |
+| JNA (`jna-jpms`) | Linux keyring, Windows Credential Manager and libVLC access on desktop | Apache-2.0 or LGPL-2.1 (dual) |
 | vlcj (Caprica Software) | Desktop video playback | GPL-3.0 |
-| libVLC (VideoLAN) | Desktop video decoding. Linux: installed separately (`sudo apt install vlc`), not shipped with DriveCinema | LGPL-2.1-or-later |
+| libVLC (VideoLAN) | Desktop video decoding. Installed separately by the user (Linux: `sudo apt install vlc`; Windows: winget or videolan.org), not shipped with DriveCinema | LGPL-2.1-or-later |
 | Google Play services auth | Google sign-in on Android TV | Android SDK / Google APIs terms (proprietary; see the additional permission above) |
 
 ## Data and services

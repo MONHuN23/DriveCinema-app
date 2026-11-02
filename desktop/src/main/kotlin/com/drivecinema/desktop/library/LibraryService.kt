@@ -9,6 +9,7 @@ import com.drivecinema.app.core.sync.DriveLibrarySyncEngine
 import com.drivecinema.app.core.sync.FolderSwitchResult
 import com.drivecinema.app.core.sync.LibraryFolderSwitcher
 import com.drivecinema.app.core.sync.LibrarySelectionStore
+import com.drivecinema.app.core.sync.StartupSync
 import com.drivecinema.desktop.auth.DesktopSession
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
@@ -35,7 +36,9 @@ sealed interface LibraryState {
         val switchingTo: String? = null,
         val errorMessage: String? = null,
         /** True when a library already exists (switching): the picker can be closed again. */
-        val canCancel: Boolean = false
+        val canCancel: Boolean = false,
+        /** The library in use while switching, tagged "Current" in the picker; null on first run. */
+        val currentFolderId: String? = null
     ) : LibraryState
 
     data class Ready(
@@ -156,7 +159,8 @@ class LibraryService(
     }
 
     private fun loadFolders(canCancel: Boolean, error: String? = null) {
-        _state.value = LibraryState.ChoosingFolder(isLoading = true, errorMessage = error, canCancel = canCancel)
+        val currentFolderId = current?.folderId
+        _state.value = LibraryState.ChoosingFolder(isLoading = true, errorMessage = error, canCancel = canCancel, currentFolderId = currentFolderId)
         launch {
             gateway.listRootFolders(token()).fold(
                 onSuccess = { folders ->
@@ -164,45 +168,58 @@ class LibraryService(
                         sections = FolderPickerSections.from(folders),
                         isLoading = false,
                         errorMessage = error,
-                        canCancel = canCancel
+                        canCancel = canCancel,
+                        currentFolderId = currentFolderId
                     )
                 },
                 onFailure = { e ->
                     _state.value = LibraryState.ChoosingFolder(
                         isLoading = false,
                         errorMessage = LibraryFolderSwitcher.describeDriveError("your Drive", e),
-                        canCancel = canCancel
+                        canCancel = canCancel,
+                        currentFolderId = currentFolderId
                     )
                 }
             )
         }
     }
 
-    /** Startup sync, like Android: enrich what is there, then re-crawl the library folder. */
+    /**
+     * Startup sync, like Android: re-crawl the library folder first (the crawl enriches what it wrote); TMDB alone
+     * only when no crawl completed (Task N.2, [StartupSync]).
+     */
     private fun sync(library: LibraryFolderSetting) {
         _state.value = LibraryState.Ready(library.folderName, isSyncing = true)
         launch {
-            enrichQuietly()
-            val token = token()
-            val validation = gateway.validateStreamingFolder(library.folderId, token).getOrElse { e ->
-                _state.value = LibraryState.Ready(library.folderName, message = offlineMessage(e))
-                return@launch
-            }
-            when (validation) {
-                is FolderValidationResult.Valid -> {
-                    val result = withContext(ioDispatcher) {
-                        syncEngine.executeInitialCrawl(validation.filmsFolderId, validation.seriesFolderId, token, library.folderId)
+            StartupSync.run(
+                syncDrive = syncDrive@{
+                    val token = token()
+                    val validation = gateway.validateStreamingFolder(library.folderId, token).getOrElse { e ->
+                        _state.value = LibraryState.Ready(library.folderName, message = offlineMessage(e))
+                        return@syncDrive false
                     }
-                    _state.value = LibraryState.Ready(
-                        library.folderName,
-                        message = result.exceptionOrNull()?.let { offlineMessage(it) }
-                    )
-                }
-                is FolderValidationResult.Invalid -> loadFolders(
-                    canCancel = false,
-                    error = "'${library.folderName}' can no longer be used as a library: ${validation.reason}. Choose a folder."
-                )
-            }
+                    when (validation) {
+                        is FolderValidationResult.Valid -> {
+                            val result = withContext(ioDispatcher) {
+                                syncEngine.executeInitialCrawl(validation.filmsFolderId, validation.seriesFolderId, token, library.folderId)
+                            }
+                            _state.value = LibraryState.Ready(
+                                library.folderName,
+                                message = result.exceptionOrNull()?.let { offlineMessage(it) }
+                            )
+                            result.isSuccess
+                        }
+                        is FolderValidationResult.Invalid -> {
+                            loadFolders(
+                                canCancel = false,
+                                error = "'${library.folderName}' can no longer be used as a library: ${validation.reason}. Choose a folder."
+                            )
+                            false
+                        }
+                    }
+                },
+                enrich = { enrichQuietly() }
+            )
         }
     }
 

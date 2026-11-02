@@ -3,6 +3,8 @@ package com.drivecinema.desktop.browse
 import com.drivecinema.app.core.database.DriveCinemaDatabase
 import com.drivecinema.app.core.database.dao.ContinueWatchingItem
 import com.drivecinema.app.core.database.entity.MediaItemEntity
+import com.drivecinema.app.core.database.entity.MediaSourceEntity
+import com.drivecinema.app.core.metadata.MediaInfoFormat
 import com.drivecinema.app.core.database.entity.MediaType
 import com.drivecinema.app.core.database.entity.PlaybackProgressEntity
 import com.drivecinema.app.core.database.entity.SeriesEntity
@@ -20,12 +22,15 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 
+/** Home and the Films / Series views (Task L.1): Continue Watching plus every title as a card with its watch state. */
 data class HomeContent(
     val continueWatching: List<ContinueWatchingItem> = emptyList(),
-    val movies: List<MediaItemEntity> = emptyList(),
-    val series: List<SeriesEntity> = emptyList()
+    val films: List<BrowseCard> = emptyList(),
+    val series: List<BrowseCard> = emptyList()
 ) {
-    val isEmpty: Boolean get() = continueWatching.isEmpty() && movies.isEmpty() && series.isEmpty()
+    val isEmpty: Boolean get() = continueWatching.isEmpty() && films.isEmpty() && series.isEmpty()
+
+    fun cards(kind: BrowseKind): List<BrowseCard> = if (kind == BrowseKind.FILMS) films else series
 }
 
 data class SearchResults(
@@ -36,7 +41,12 @@ data class SearchResults(
     val isEmpty: Boolean get() = movies.isEmpty() && series.isEmpty()
 }
 
-data class MovieDetails(val movie: MediaItemEntity, val progress: PlaybackProgressEntity?) {
+data class MovieDetails(
+    val movie: MediaItemEntity,
+    val progress: PlaybackProgressEntity?,
+    /** Task L.3: available copies, one info line each. */
+    val sources: List<MediaSourceEntity> = emptyList()
+) {
     /** "Resume from 1:02:03" when there is an unfinished position worth resuming. */
     val resumePositionMs: Long?
         get() = progress?.takeIf { !it.isCompleted && it.positionMs > 0 }?.positionMs
@@ -46,7 +56,9 @@ data class SeriesDetails(
     val series: SeriesEntity,
     val seasons: Map<Int, List<MediaItemEntity>>,
     /** Latest progress per episode ID, across Drive and local copies. */
-    val progress: Map<String, PlaybackProgressEntity> = emptyMap()
+    val progress: Map<String, PlaybackProgressEntity> = emptyMap(),
+    /** Task L.3: per episode ID, the copy that knows most about itself (for "48 min · 1080p"). */
+    val sources: Map<String, MediaSourceEntity> = emptyMap()
 )
 
 /** Where a Continue Watching card leads. */
@@ -61,8 +73,16 @@ class BrowseModels(private val db: DriveCinemaDatabase) {
     fun home(): Flow<HomeContent> = combine(
         ContinueWatching.flow(db),
         db.mediaDao().getAllMoviesFlow(),
-        db.mediaDao().getAllSeriesFlow()
-    ) { continueWatching, movies, series -> HomeContent(continueWatching, movies, series) }
+        db.mediaDao().getAllSeriesFlow(),
+        db.mediaDao().getEpisodeCountsFlow(),
+        db.mediaSourceDao().getWatchHistoryFlow()
+    ) { continueWatching, movies, series, counts, history ->
+        HomeContent(
+            continueWatching,
+            films = LibraryBrowse.filmCards(movies, history),
+            series = LibraryBrowse.seriesCards(series, counts.associate { it.seriesId to it.episodeCount }, history)
+        )
+    }
 
     /** Debounced like the Android search (300 ms); blank queries show nothing. */
     @OptIn(FlowPreview::class, ExperimentalCoroutinesApi::class)
@@ -80,16 +100,23 @@ class BrowseModels(private val db: DriveCinemaDatabase) {
     /** Null when the film no longer exists. Progress is aggregated over all copies (Drive and local). */
     fun movie(id: String): Flow<MovieDetails?> = combine(
         flow { emit(db.mediaDao().getMediaItemById(id)) },
-        db.mediaSourceDao().getLatestProgressForItemFlow(id)
-    ) { movie, progress -> movie?.let { MovieDetails(it, progress) } }
+        db.mediaSourceDao().getLatestProgressForItemFlow(id),
+        db.mediaSourceDao().getAvailableSourcesForItemFlow(id)
+    ) { movie, progress, sources -> movie?.let { MovieDetails(it, progress, sortCopies(sources)) } }
 
     fun series(id: String): Flow<SeriesDetails?> = combine(
         db.mediaDao().getSeriesByIdFlow(id),
         db.mediaDao().getEpisodesForSeriesFlow(id),
-        db.mediaSourceDao().getSeriesProgressFlow(id)
-    ) { series, episodes, progress ->
+        db.mediaSourceDao().getSeriesProgressFlow(id),
+        db.mediaSourceDao().getAvailableSourcesForSeriesFlow(id)
+    ) { series, episodes, progress, sources ->
         series?.let {
-            SeriesDetails(it, episodes.groupBy { ep -> ep.seasonNumber ?: 1 }.toSortedMap(), progress.associateBy { p -> p.mediaItemId })
+            SeriesDetails(
+                it,
+                episodes.groupBy { ep -> ep.seasonNumber ?: 1 }.toSortedMap(),
+                progress.associateBy { p -> p.mediaItemId },
+                sources.groupBy { s -> s.mediaItemId }.mapValues { (_, copies) -> bestKnown(copies) }
+            )
         }
     }
 
@@ -105,6 +132,12 @@ class BrowseModels(private val db: DriveCinemaDatabase) {
 
         fun progressFraction(positionMs: Long, durationMs: Long): Float =
             PlaybackTimeUtils.calculateProgress(positionMs, durationMs)
+
+        /** Copies in the order they would play: this computer, another PC, then Drive (shared with phone/TV). */
+        fun sortCopies(copies: List<MediaSourceEntity>): List<MediaSourceEntity> = MediaInfoFormat.sortCopies(copies)
+
+        /** The copy with the most known details (length or resolution), in play order on a tie. */
+        fun bestKnown(copies: List<MediaSourceEntity>): MediaSourceEntity = MediaInfoFormat.bestKnown(copies)!!
 
         fun formatRuntime(seconds: Int?): String? {
             val minutes = (seconds ?: return null) / 60

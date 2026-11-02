@@ -17,29 +17,34 @@ import com.google.android.gms.common.api.ApiException
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import com.drivecinema.app.core.auth.GoogleAuthManager
+import com.drivecinema.app.core.devicesync.AppDataClient
+import com.drivecinema.app.core.devicesync.DeviceSync
+import com.drivecinema.app.core.devicesync.DeviceSyncController
+import com.drivecinema.app.core.devicesync.DeviceSyncRunner.Trigger
+import com.drivecinema.app.core.devicesync.DeviceSyncSetting
+import com.drivecinema.app.ui.setup.DeviceSyncTexts
+import com.drivecinema.app.core.auth.TvSignInErrors
 import com.drivecinema.app.core.database.DriveCinemaDatabase
 import com.drivecinema.app.core.database.getInstance
 import com.drivecinema.app.core.device.SystemPlayServicesChecker
 import com.drivecinema.app.core.logging.AndroidLogSink
+import com.drivecinema.app.core.logging.AndroidPerfTracer
+import com.drivecinema.app.core.logging.DebugPerf
+import com.drivecinema.app.core.logging.Perf
+import com.drivecinema.app.core.logging.PerfSpan
 import com.drivecinema.app.core.logging.AppLog
 import com.drivecinema.app.core.device.TvDeviceDetector
-import com.drivecinema.app.core.database.entity.MediaItemEntity
-import com.drivecinema.app.core.database.entity.SeriesEntity
 import com.drivecinema.app.core.local.AddFolderResult
-import com.drivecinema.app.core.local.LocalFolder
 import com.drivecinema.app.core.local.LocalFolderPreferences
 import com.drivecinema.app.core.local.SystemTvStorageCapabilityChecker
 import com.drivecinema.app.core.local.TvStorageCapabilityChecker
@@ -51,33 +56,57 @@ import com.drivecinema.app.core.pairing.PairingRejectedException
 import com.drivecinema.app.core.pairing.PhonePairingClient
 import com.drivecinema.app.core.pairing.TvPairingServer
 import com.drivecinema.app.core.pairing.TvUnreachableException
+import com.drivecinema.app.core.remote.DeviceLink
+import com.drivecinema.app.core.remote.DeviceLinkStore
+import com.drivecinema.app.core.remote.MediaDaoPlayCatalog
+import com.drivecinema.app.core.remote.PairingLink
+import com.drivecinema.app.core.remote.PendingPlay
+import com.drivecinema.app.core.remote.PhonePlayOnTv
+import com.drivecinema.app.core.remote.PlayOnTvMessages
+import com.drivecinema.app.core.remote.PlayOnTvOutcome
+import com.drivecinema.app.core.remote.PlayOnTvReceiver
+import com.drivecinema.app.core.remote.PlayOnTvRouting
+import com.drivecinema.app.core.remote.PlayStatus
 import com.drivecinema.app.core.security.AuthCredentialStore
 import com.drivecinema.app.core.security.AuthCredentials
 import com.drivecinema.app.core.sync.DriveLibrarySyncEngine
 import com.drivecinema.app.core.sync.FolderQueueCrawler
+import com.drivecinema.app.ui.naming.NamingDeps
 import com.drivecinema.app.core.sync.FolderSwitchResult
 import com.drivecinema.app.core.sync.LibraryFolderSwitcher
 import com.drivecinema.app.core.sync.LibraryRefreshResult
 import com.drivecinema.app.core.sync.LibraryRefresher
+import com.drivecinema.app.core.host.HostConnections
+import com.drivecinema.app.core.host.HostDiscoveryClient
+import com.drivecinema.app.core.host.HostLibrarySync
+import com.drivecinema.app.core.host.HostPairingException
+import com.drivecinema.app.ui.design.DcBannerKind
+import com.drivecinema.app.ui.settings.PcConnection
+import com.drivecinema.app.ui.settings.PcRow
+import com.drivecinema.app.ui.settings.PcsActions
+import com.drivecinema.app.ui.settings.PcsNotice
+import com.drivecinema.app.core.sync.StartupSync
 import com.drivecinema.app.core.sync.StartupSyncGate
 import com.drivecinema.app.core.sync.StartupToken
 import com.drivecinema.app.core.player.ContinueWatching
 import com.drivecinema.app.core.player.NextEpisode
+import com.drivecinema.app.core.player.PreviousEpisode
 import com.drivecinema.app.theme.DriveCinemaTheme
 import com.drivecinema.app.ui.details.DetailsViewModel
-import com.drivecinema.app.ui.details.MovieDetailsScreen
-import com.drivecinema.app.ui.details.SeriesDetailsScreen
-import com.drivecinema.app.ui.mobile.grid.FullLibraryGridScreen
-import com.drivecinema.app.ui.mobile.home.MobileHomeScreen
+import com.drivecinema.app.ui.details.screenViewModel
+import com.drivecinema.app.ui.navigation.AppNavDisplay
+import com.drivecinema.app.ui.navigation.AppNavigator
+import com.drivecinema.app.ui.navigation.LibraryActions
+import com.drivecinema.app.ui.navigation.Screen
 import com.drivecinema.app.ui.mobile.home.MobileHomeViewModel
-import com.drivecinema.app.ui.mobile.navigation.MobileBottomNav
-import com.drivecinema.app.ui.mobile.navigation.MobileTab
-import com.drivecinema.app.ui.mobile.search.SearchScreen
 import com.drivecinema.app.ui.player.PlayerActivity
+import com.drivecinema.app.ui.player.PlayerExit
 import com.drivecinema.app.ui.search.SearchViewModel
 import com.drivecinema.app.ui.mobile.home.AccountUiState
-import com.drivecinema.app.ui.setup.AccountDialog
-import com.drivecinema.app.ui.setup.FolderPickerScreen
+import android.net.Uri
+import com.drivecinema.app.core.skipintro.SkipIntroSetting
+import com.drivecinema.app.ui.settings.SettingsActions
+import com.drivecinema.app.ui.settings.SettingsUiState
 import com.drivecinema.app.ui.setup.PhonePairingDialog
 import com.drivecinema.app.core.local.LocalLibraryCrawler
 import com.drivecinema.app.core.local.LocalLibraryIndexer
@@ -87,36 +116,23 @@ import com.drivecinema.app.core.local.SystemDocumentTreeSource
 import com.drivecinema.app.ui.player.PlaybackResolver
 import com.drivecinema.app.ui.player.PlaybackSource
 import com.drivecinema.app.ui.player.ResolvedPlayback
-import com.drivecinema.app.ui.setup.DuplicateReview
 import com.drivecinema.app.ui.setup.DuplicateReviews
-import com.drivecinema.app.ui.setup.DuplicatesScreen
-import com.drivecinema.app.ui.setup.SetupGuideScreen
+import com.drivecinema.app.ui.setup.SetupActions
+import com.drivecinema.app.ui.setup.SetupGuideContent
+import com.drivecinema.app.ui.setup.SetupUiState
 import com.drivecinema.app.ui.setup.SignInOptions
-import com.drivecinema.app.ui.setup.SignInScreen
 import com.drivecinema.app.ui.setup.TvPairingDialog
-import com.drivecinema.app.ui.tv.grid.TvCollectionGridScreen
-import com.drivecinema.app.ui.tv.grid.TvGridItem
-import com.drivecinema.app.ui.tv.home.TvHomeScreen
-import com.drivecinema.app.ui.tv.search.TvSearchScreen
+import com.drivecinema.app.ui.setup.LinkedDevicesDialog
+import com.drivecinema.app.ui.setup.LinkedDevicesTexts
+import com.drivecinema.app.ui.player.withStartPosition
 import com.drivecinema.app.ui.tv.setup.TvStorageUnsupportedDialog
+import java.io.IOException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.resume
-
-sealed interface AppScreen {
-    data object SignIn : AppScreen
-    data object FolderPicker : AppScreen
-    data object Home : AppScreen
-    data class MovieDetails(val movie: MediaItemEntity) : AppScreen
-    data class SeriesDetails(val series: SeriesEntity) : AppScreen
-    data class TvGrid(val title: String, val items: List<TvGridItem>) : AppScreen
-    data object TvSearch : AppScreen
-    data class SetupGuide(val returnTo: AppScreen) : AppScreen
-    data object Duplicates : AppScreen
-}
 
 class MainActivity : ComponentActivity() {
 
@@ -127,47 +143,47 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var credentialStore: AuthCredentialStore
     private val authManager = GoogleAuthManager()
-    private val driveGateway = GoogleDriveGateway()
+    /** One client for every Drive metadata request (folder check, crawl, sync), so they share connections (N.1, F-12). */
+    private val driveHttpClient = DebugPerf.httpClient("drive")
+    private val driveGateway = GoogleDriveGateway(httpClient = driveHttpClient)
     private lateinit var database: DriveCinemaDatabase
     private lateinit var syncEngine: DriveLibrarySyncEngine
     private lateinit var folderSwitcher: LibraryFolderSwitcher
+    /** Milestone R: what the naming helper and the Naming check use (TMDB, and series folders read read-only). */
+    private lateinit var namingDeps: NamingDeps
 
     // Written by sync and refresh coroutines on IO threads, read on the main thread (report F-11).
     @Volatile
     private var cachedAccessToken = ""
     private var isTvDevice = false
-    private var isTvStorageSupported = true
-    private var signInOptions = SignInOptions.forDevice(isTv = false, playServicesAvailable = true)
 
     private lateinit var homeViewModel: MobileHomeViewModel
-    private val showAccountDialog = mutableStateOf(false)
+    /** Task P.2: what the Settings and Local folders screens show (was the Account dialog's state). */
+    private val settings = SettingsUiState()
+    /** Task I.2: what the last check found for each paired PC, by host id (My PCs' state is `settings.pcs`). */
+    private val pcStatus = mutableMapOf<String, PcConnection>()
+    /** Milestone Q: "Sync with my devices" (watch progress through the Drive app folder). */
+    private lateinit var deviceSync: DeviceSyncController
+    private var hasStartedOnce = false
     private lateinit var localFolderPreferences: LocalFolderPreferences
-    private val localFoldersState = mutableStateOf<List<LocalFolder>>(emptyList())
     private lateinit var tvStorageCapabilityChecker: TvStorageCapabilityChecker
     private val showTvStorageUnsupportedDialog = mutableStateOf(false)
 
     // Local library (Task C.4 phase 2)
     private lateinit var localIndexer: LocalLibraryIndexer
     private lateinit var playbackResolver: PlaybackResolver
-    private val pendingDuplicateCount = mutableStateOf(0)
-    private val duplicateReviews = mutableStateOf<List<DuplicateReview>>(emptyList())
+    /** Task I.2: paired PCs (pairing, catalog sync, streaming). */
+    private lateinit var hostSync: HostLibrarySync
 
-    // App Navigation & UI state
-    private val currentScreen = mutableStateOf<AppScreen>(AppScreen.SignIn)
-    private val isAuthLoading = mutableStateOf(false)
-    private val authErrorMessage = mutableStateOf<String?>(null)
+    // App navigation (Task M.3: a Navigation 3 back stack, saved across rotation) & UI state
+    private lateinit var navigator: AppNavigator
+    private lateinit var searchViewModel: SearchViewModel
+    /** Sign-in, folder picker (first run and library switching) and duplicate review state. */
+    private val setup = SetupUiState()
 
-    // Folder Picker state
-    private val driveFolders = mutableStateOf<List<DriveFolder>>(emptyList())
-    private val isFolderLoading = mutableStateOf(false)
-    private val isFolderValidating = mutableStateOf(false)
-    private val folderErrorMessage = mutableStateOf<String?>(null)
-
-    // In-app library switching (FolderPicker opened from the account dialog while signed in)
-    private val isSwitchingLibrary = mutableStateOf(false)
+    // In-app library switching (FolderPicker opened from Settings while signed in)
     private var folderSwitchJob: Job? = null
     private var librarySyncJob: Job? = null
-    private val isRefreshingLibrary = mutableStateOf(false)
     private val libraryRefresher by lazy {
         LibraryRefresher(
             validateFolder = { root, token -> driveGateway.validateStreamingFolder(root, token) },
@@ -186,6 +202,13 @@ class MainActivity : ComponentActivity() {
     private val isPhonePairing = mutableStateOf(false)
     private val phonePairingError = mutableStateOf<String?>(null)
 
+    // Milestone D (Play on TV): the phone's linked TVs, the TV's linked phones, and the list dialog for either.
+    private val linkedTvs = mutableStateOf<List<DeviceLink>>(emptyList())
+    private val linkedPhones = mutableStateOf<List<DeviceLink>>(emptyList())
+    private val showLinkedDevicesDialog = mutableStateOf(false)
+    /** The TV's pairing dialog links a phone only (the TV is already signed in). */
+    private val tvPairingLinkOnly = mutableStateOf(false)
+
     /** Opens the phone's "Pair with Android TV" dialog without the previous attempt's error message. */
     private fun openPhonePairingDialog() {
         phonePairingError.value = null
@@ -197,52 +220,97 @@ class MainActivity : ComponentActivity() {
     private val authResultLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         val dataIntent = result.data
         if (dataIntent != null) {
-            isAuthLoading.value = true
+            setup.isAuthLoading.value = true
             authManager.handleAuthResponse(this, dataIntent) { exchangeResult ->
                 runOnUiThread {
-                    isAuthLoading.value = false
+                    setup.isAuthLoading.value = false
                     exchangeResult.fold(
                         onSuccess = { (accessToken, refreshToken) ->
                             cachedAccessToken = accessToken
                             credentialStore.saveCredentials(AuthCredentials(refreshToken = refreshToken, rootFolderId = ""))
-                            authErrorMessage.value = null
+                            setup.authErrorMessage.value = null
                             loadFoldersAndProceed(accessToken)
                         },
                         onFailure = { error ->
-                            authErrorMessage.value = "Sign in failed: ${error.message}"
+                            setup.authErrorMessage.value = "Sign in failed: ${error.message}"
                         }
                     )
                 }
             }
         } else {
-            isAuthLoading.value = false
+            setup.isAuthLoading.value = false
         }
+    }
+
+    /** Milestone Q: Google's consent page for the app folder scope, opened by turning "Sync with my devices" on (phone). */
+    private val deviceSyncGrantLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        val dataIntent = result.data
+        if (dataIntent == null) {
+            deviceSync.grantRefused("Sync stays off: the Google page was closed.")
+            return@registerForActivityResult
+        }
+        authManager.handleAuthResponse(this, dataIntent) { exchangeResult ->
+            lifecycleScope.launch {
+                exchangeResult.fold(
+                    onSuccess = { (accessToken, refreshToken) ->
+                        val email = withContext(Dispatchers.IO) { driveGateway.getAboutUser(accessToken).getOrNull()?.emailAddress }
+                        deviceSync.completeGrant(email, credentialStore.getCredentials()?.userEmail) {
+                            // The new grant covers read-only + the app folder; folder and library stay as they are.
+                            credentialStore.getCredentials()?.let { credentialStore.saveCredentials(it.copy(refreshToken = refreshToken)) }
+                            cachedAccessToken = accessToken
+                        }
+                    },
+                    onFailure = { error -> deviceSync.grantRefused("Sync stays off: ${error.message}") }
+                )
+            }
+        }
+    }
+
+    private fun onDeviceSyncChange(enabled: Boolean) {
+        when {
+            !enabled -> deviceSync.disable()
+            // TVs sign in by pairing only (J.6): they can sync when the phone's sign-in had the scope when it paired.
+            isTvDevice -> lifecycleScope.launch { deviceSync.turnOn() }
+            else -> try {
+                val email = credentialStore.getCredentials()?.userEmail
+                deviceSyncGrantLauncher.launch(
+                    authManager.createAuthRequestIntent(this, GOOGLE_CLIENT_ID, GoogleAuthManager.DEVICE_SYNC_SCOPES, email)
+                )
+            } catch (e: Exception) {
+                deviceSync.grantRefused("Couldn't open Google's page: ${e.message}")
+            }
+        }
+    }
+
+    private fun runDeviceSync(trigger: Trigger) {
+        lifecycleScope.launch { deviceSync.syncNow(trigger) }
     }
 
     private val tvConsentLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         val account = pendingTvAccount
         if (result.resultCode == RESULT_OK && account != null) {
-            isAuthLoading.value = true
+            setup.isAuthLoading.value = true
             authManager.fetchTvAccessToken(this, account) { exchangeResult ->
                 runOnUiThread {
-                    isAuthLoading.value = false
+                    setup.isAuthLoading.value = false
                     exchangeResult.fold(
                         onSuccess = { (accessToken, refreshToken) ->
                             cachedAccessToken = accessToken
                             credentialStore.saveCredentials(AuthCredentials(refreshToken = refreshToken, rootFolderId = ""))
-                            authErrorMessage.value = null
+                            setup.authErrorMessage.value = null
                             loadFoldersAndProceed(accessToken)
                         },
                         onFailure = { error ->
-                            authErrorMessage.value = "TV authorization failed: ${error.message}"
+                            AppLog.e("TvSignIn", "Drive token after TV consent failed", error)
+                            setup.authErrorMessage.value = "TV authorization failed: ${error.message}"
                         }
                     )
                 }
             }
         } else {
-            isAuthLoading.value = false
+            setup.isAuthLoading.value = false
             if (result.resultCode != RESULT_OK) {
-                authErrorMessage.value = "Google Drive authorization was not granted"
+                setup.authErrorMessage.value = "Google Drive authorization was not granted"
             }
         }
     }
@@ -250,15 +318,15 @@ class MainActivity : ComponentActivity() {
     private val tvSignInLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         val dataIntent = result.data
         if (dataIntent != null) {
-            isAuthLoading.value = true
+            setup.isAuthLoading.value = true
             authManager.handleTvSignInResult(this, dataIntent) { exchangeResult ->
                 runOnUiThread {
                     exchangeResult.fold(
                         onSuccess = { (accessToken, refreshToken) ->
-                            isAuthLoading.value = false
+                            setup.isAuthLoading.value = false
                             cachedAccessToken = accessToken
                             credentialStore.saveCredentials(AuthCredentials(refreshToken = refreshToken, rootFolderId = ""))
-                            authErrorMessage.value = null
+                            setup.authErrorMessage.value = null
                             loadFoldersAndProceed(accessToken)
                         },
                         onFailure = { error ->
@@ -275,23 +343,26 @@ class MainActivity : ComponentActivity() {
                                     if (consentIntent != null) {
                                         tvConsentLauncher.launch(consentIntent)
                                     } else {
-                                        isAuthLoading.value = false
-                                        authErrorMessage.value = "Missing consent intent for TV authorization"
+                                        setup.isAuthLoading.value = false
+                                        setup.authErrorMessage.value = "Missing consent intent for TV authorization"
                                     }
                                 } else {
-                                    isAuthLoading.value = false
-                                    authErrorMessage.value = "Could not resolve TV Google account"
+                                    setup.isAuthLoading.value = false
+                                    setup.authErrorMessage.value = "Could not resolve TV Google account"
                                 }
                             } else {
-                                isAuthLoading.value = false
-                                authErrorMessage.value = "Sign in failed: ${error.message}"
+                                setup.isAuthLoading.value = false
+                                AppLog.e("TvSignIn", "Google sign-in on the TV failed", error)
+                                setup.authErrorMessage.value = TvSignInErrors.describe(error)
                             }
                         }
                     )
                 }
             }
         } else {
-            isAuthLoading.value = false
+            setup.isAuthLoading.value = false
+            AppLog.w("TvSignIn", "Google sign-in returned no data (result code ${result.resultCode})")
+            setup.authErrorMessage.value = TvSignInErrors.NO_RESULT
         }
     }
 
@@ -304,7 +375,7 @@ class MainActivity : ComponentActivity() {
                     val name = if (result is AddFolderResult.Success) localFolderPreferences.getDisplayName(uri) else ""
                     Triple(result, name, localFolderPreferences.getAllFolders())
                 }
-                localFoldersState.value = updated
+                settings.localFolders.value = updated
                 val message = when (result) {
                     is AddFolderResult.Success -> "Local folder '$folderName' added — scanning for videos…"
                     is AddFolderResult.NotLocalStorage -> "Please pick a folder on this device's storage"
@@ -323,7 +394,7 @@ class MainActivity : ComponentActivity() {
 
     private fun refreshLocalFolders() {
         lifecycleScope.launch {
-            localFoldersState.value = withContext(Dispatchers.IO) { localFolderPreferences.getAllFolders() }
+            settings.localFolders.value = withContext(Dispatchers.IO) { localFolderPreferences.getAllFolders() }
             scanLocalFolders(announce = false)
         }
     }
@@ -334,34 +405,43 @@ class MainActivity : ComponentActivity() {
      */
     private fun scanLocalFolders(announce: Boolean) {
         lifecycleScope.launch {
-            val summary = withContext(Dispatchers.IO) {
-                val saved = localFolderPreferences.getAllFolderUris()
-                localIndexer.retireUnsavedFolders(saved)
-                var found = 0
-                var linked = 0
-                var review = 0
-                var failed = 0
-                for (tree in saved) {
-                    try {
-                        val r = localIndexer.indexFolder(tree)
-                        found += r.videosFound
-                        linked += r.linkedToExisting
-                        review += r.possibleDuplicates
-                    } catch (e: kotlinx.coroutines.CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        failed++
-                        android.util.Log.w("MainActivity", "Local folder scan failed: ${e.message}")
+            settings.isScanningLocalFolders.value = true
+            val counts = mutableMapOf<String, Int>()
+            val summary = try {
+                withContext(Dispatchers.IO) {
+                    val saved = localFolderPreferences.getAllFolderUris()
+                    localIndexer.retireUnsavedFolders(saved)
+                    var found = 0
+                    var linked = 0
+                    var review = 0
+                    var failed = 0
+                    for (tree in saved) {
+                        try {
+                            val r = localIndexer.indexFolder(tree)
+                            counts[tree.toString()] = r.videosFound
+                            found += r.videosFound
+                            linked += r.linkedToExisting
+                            review += r.possibleDuplicates
+                        } catch (e: kotlinx.coroutines.CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            failed++
+                            android.util.Log.w("MainActivity", "Local folder scan failed: ${e.message}")
+                        }
                     }
+                    listOf(found, linked, review, failed)
                 }
-                listOf(found, linked, review, failed)
+            } finally {
+                // Local folders shows each folder's count; a folder that failed to list is left out ("Couldn't read").
+                settings.localFolderVideoCounts.value = counts.toMap()
+                settings.isScanningLocalFolders.value = false
             }
             if (announce) {
                 val (found, linked, review, failed) = summary
                 val text = buildString {
                     append(if (found == 0) "No videos found in your local folders" else "Found $found local videos")
                     if (linked > 0) append(", $linked matched titles you already have")
-                    if (review > 0) append(" — $review to review in Account")
+                    if (review > 0) append(" — $review to review in Settings")
                     if (failed > 0) append(" ($failed folder(s) could not be read)")
                 }
                 Toast.makeText(this@MainActivity, text, Toast.LENGTH_LONG).show()
@@ -371,14 +451,14 @@ class MainActivity : ComponentActivity() {
 
     private fun openDuplicateReview() {
         lifecycleScope.launch {
-            duplicateReviews.value = withContext(Dispatchers.IO) { DuplicateReviews.load(database.mediaSourceDao()) }
-            currentScreen.value = AppScreen.Duplicates
+            setup.duplicateReviews.value = withContext(Dispatchers.IO) { DuplicateReviews.load(database.mediaSourceDao()) }
+            navigator.open(Screen.Duplicates)
         }
     }
 
     private fun resolveDuplicate(action: suspend () -> Unit) {
         lifecycleScope.launch {
-            duplicateReviews.value = withContext(Dispatchers.IO) {
+            setup.duplicateReviews.value = withContext(Dispatchers.IO) {
                 action()
                 DuplicateReviews.load(database.mediaSourceDao())
             }
@@ -401,33 +481,80 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         AppLog.sink = AndroidLogSink
+        Perf.tracer = AndroidPerfTracer
+        DebugPerf.installImageLoader(this)
         enableEdgeToEdge()
 
         credentialStore = AuthCredentialStore(this)
         database = DriveCinemaDatabase.getInstance(this)
         val tmdbApiKey = credentialStore.getCredentials()?.tmdbApiKey?.ifEmpty { null }
             ?: BuildConfig.TMDB_API_KEY.ifEmpty { null }
-        val tmdbClient = TmdbClient(apiKey = tmdbApiKey ?: "")
+        val tmdbClient = TmdbClient(httpClient = DebugPerf.httpClient("tmdb"), apiKey = tmdbApiKey ?: "")
         syncEngine = DriveLibrarySyncEngine(
-            crawler = FolderQueueCrawler(),
+            crawler = FolderQueueCrawler(httpClient = driveHttpClient),
             mediaDao = database.mediaDao(),
             syncMetadataDao = database.syncMetadataDao(),
-            tmdbClient = tmdbClient
+            tmdbClient = tmdbClient,
+            httpClient = driveHttpClient
         )
         folderSwitcher = LibraryFolderSwitcher(driveGateway, syncEngine, credentialStore)
+        val namingCrawler = FolderQueueCrawler(httpClient = driveHttpClient)
+        namingDeps = NamingDeps(
+            tmdb = tmdbClient,
+            tmdbAvailable = tmdbApiKey != null,
+            readSeriesFolder = { seriesFolderId ->
+                withContext(Dispatchers.IO) {
+                    val refreshToken = credentialStore.getCredentials()?.refreshToken?.takeIf { it.isNotEmpty() }
+                        ?: throw IOException("Not signed in")
+                    val token = obtainAccessToken(refreshToken).getOrThrow()
+                    cachedAccessToken = token
+                    namingCrawler.readSeriesFolder(seriesFolderId, token)
+                }
+            }
+        )
         localFolderPreferences = LocalFolderPreferences(this)
         tvStorageCapabilityChecker = SystemTvStorageCapabilityChecker(packageManager)
         localIndexer = LocalLibraryIndexer(database, LocalLibraryCrawler(SystemDocumentTreeSource(contentResolver)))
-        playbackResolver = PlaybackResolver(database.mediaSourceDao())
+        hostSync = HostConnections.get(this)
+        playbackResolver = PlaybackResolver(
+            database.mediaSourceDao(),
+            hostUrl = { key -> hostSync.stream(key, recheck = true)?.first },
+            checkHost = { itemId, key -> hostSync.checkConnection(itemId, key) }
+        )
         lifecycleScope.launch {
-            database.mediaSourceDao().getPendingMatchesFlow().collect { pendingDuplicateCount.value = it.size }
+            database.mediaSourceDao().getPendingMatchesFlow().collect { settings.pendingDuplicateCount.value = it.size }
         }
         refreshLocalFolders()
+        syncPcs()
 
         isTvDevice = TvDeviceDetector.isTv(this)
-        signInOptions = SignInOptions.forDevice(isTvDevice, SystemPlayServicesChecker(this).isAvailable())
-        // Queried once (PackageManager IPC), not on every recomposition of the account dialog.
-        isTvStorageSupported = !isTvDevice || tvStorageCapabilityChecker.isOpenDocumentTreeSupported()
+        // Milestone D: the TV listens for Play on TV while any of its screens is visible; the phone loads its TVs.
+        if (isTvDevice) PlayOnTvReceiver.install(application) else refreshLinkedDevices()
+        setup.signInOptions.value = SignInOptions.forDevice(isTvDevice, SystemPlayServicesChecker(this).isAvailable())
+        // Queried once (PackageManager IPC), not on every recomposition of Settings.
+        settings.canAddLocalFolders.value = !isTvDevice || tvStorageCapabilityChecker.isOpenDocumentTreeSupported()
+
+        val deviceSyncSetting = DeviceSyncSetting(this)
+        val appFolderSync = DeviceSync(database.deviceSyncDao(), AppDataClient(driveHttpClient), deviceSyncSetting.identity(isTvDevice))
+        deviceSync = DeviceSyncController(
+            switch = deviceSyncSetting,
+            needsPermissionText = if (isTvDevice) DeviceSyncTexts.TV_NEEDS_PAIRING else DeviceSyncTexts.PHONE_NEEDS_PERMISSION,
+            accessToken = {
+                credentialStore.getCredentials()?.refreshToken?.takeIf { it.isNotEmpty() }
+                    ?.let { obtainAccessToken(it).getOrNull() }
+                    ?.also { cachedAccessToken = it }
+            },
+            sync = appFolderSync::run
+        )
+        // Settings shows the switch and its status line.
+        lifecycleScope.launch { deviceSync.enabled.collect { settings.deviceSyncEnabled.value = it } }
+        lifecycleScope.launch { deviceSync.status.collect { settings.deviceSyncStatus.value = it } }
+        // Back in front (not the first start, which syncs after the library): pick up what other devices played.
+        lifecycle.addObserver(LifecycleEventObserver { _, event ->
+            if (event != Lifecycle.Event.ON_START) return@LifecycleEventObserver
+            if (hasStartedOnce) runDeviceSync(Trigger.FOREGROUND)
+            hasStartedOnce = true
+        })
 
         // Check stored credentials
         val creds = credentialStore.getCredentials()
@@ -442,51 +569,216 @@ class MainActivity : ComponentActivity() {
             photoLink = creds?.userPhotoLink,
             isConnected = creds != null && creds.refreshToken.isNotEmpty()
         )
-        homeViewModel = MobileHomeViewModel(
-            database.mediaDao(),
-            initialAccount = initialAccount,
-            continueWatching = ContinueWatching.flow(database)
-        )
+        // Kept in the activity's ViewModelStore (Task M.3): a rotation keeps Home's rows and the search text.
+        homeViewModel = screenViewModel(viewModelStore, MobileHomeViewModel::class.java) {
+            MobileHomeViewModel(
+                database.mediaDao(),
+                initialAccount = initialAccount,
+                continueWatching = ContinueWatching.flow(database),
+                // Only the phone's Library has watch-state chips.
+                watchHistory = if (isTvDevice) kotlinx.coroutines.flow.flowOf(emptyList())
+                else database.mediaSourceDao().getWatchHistoryFlow()
+            )
+        }
+        searchViewModel = screenViewModel(viewModelStore, SearchViewModel::class.java) { SearchViewModel(database.mediaDao()) }
 
-        if (creds != null && creds.refreshToken.isNotEmpty()) {
-            if (creds.rootFolderId.isNotEmpty()) {
-                currentScreen.value = AppScreen.Home
-                // A rotation recreates this activity; don't re-read the whole library each time (report F-04).
-                if (StartupSyncGate.process.shouldSync(creds.rootFolderId, isRecreated = savedInstanceState != null)) {
-                    triggerBackgroundSync(creds.refreshToken, creds.rootFolderId)
-                }
-            } else {
-                currentScreen.value = AppScreen.FolderPicker
-                refreshTokenAndLoadFolders(creds.refreshToken)
+        val root = when {
+            creds == null || creds.refreshToken.isEmpty() -> Screen.SignIn
+            creds.rootFolderId.isNotEmpty() -> Screen.Home
+            else -> Screen.FolderPicker
+        }
+        navigator = AppNavigator.attach(savedStateRegistry, root)
+        if (creds != null && root == Screen.Home) {
+            // A rotation recreates this activity; don't re-read the whole library each time (report F-04).
+            if (StartupSyncGate.process.shouldSync(creds.rootFolderId, isRecreated = savedInstanceState != null)) {
+                triggerBackgroundSync(creds.refreshToken, creds.rootFolderId)
             }
-        } else {
-            currentScreen.value = AppScreen.SignIn
+        } else if (creds != null && root == Screen.FolderPicker) {
+            refreshTokenAndLoadFolders(creds.refreshToken)
         }
 
         setContent {
-            DriveCinemaTheme {
+            DriveCinemaTheme(isTv = isTvDevice) {
                 MainAppContent()
+            }
+        }
+        handlePlayOnTvIntent(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handlePlayOnTvIntent(intent)
+    }
+
+    /** Milestone D, TV: plays what the receiver accepted, at the phone's position (only with the receiver's token). */
+    private fun handlePlayOnTvIntent(intent: Intent?) {
+        val token = intent?.getStringExtra(PendingPlay.EXTRA_TOKEN) ?: return
+        intent.removeExtra(PendingPlay.EXTRA_TOKEN)
+        val play = PendingPlay.take(token) ?: return
+        showLinkedDevicesDialog.value = false
+        launchPlayer(play.mediaItemId, play.title, play.positionMs, forcePosition = true)
+    }
+
+    private fun refreshLinkedDevices() {
+        lifecycleScope.launch {
+            if (isTvDevice) {
+                linkedPhones.value = withContext(Dispatchers.IO) { DeviceLinkStore.phones(this@MainActivity).links() }
+            } else {
+                linkedTvs.value = withContext(Dispatchers.IO) { DeviceLinkStore.tvs(this@MainActivity).links() }
             }
         }
     }
 
+    /** Milestone D, phone: sends [mediaItemId] to the linked TV (a chooser when there are several, linking when none). */
+    private fun playOnTv(mediaItemId: String, title: String) {
+        val tvs = linkedTvs.value
+        when (tvs.size) {
+            0 -> openPhonePairingDialog()
+            1 -> sendToTv(tvs[0], mediaItemId, title)
+            else -> android.app.AlertDialog.Builder(this)
+                .setTitle("Play on which TV?")
+                .setItems(tvs.map { it.name }.toTypedArray()) { _, which -> sendToTv(tvs[which], mediaItemId, title) }
+                .setNegativeButton("Cancel", null)
+                .show()
+        }
+    }
+
+    private fun sendToTv(tv: DeviceLink, mediaItemId: String, title: String) {
+        Toast.makeText(this, "Sending to ${tv.name}…", Toast.LENGTH_SHORT).show()
+        lifecycleScope.launch {
+            val request = withContext(Dispatchers.IO) {
+                PlayOnTvRouting.buildRequest(MediaDaoPlayCatalog(database.mediaDao()), database.mediaSourceDao(), mediaItemId, title)
+            }
+            val outcome = PhonePlayOnTv(this@MainActivity).send(tv, request)
+            val ok = outcome == PlayOnTvOutcome.Answered(PlayStatus.OK)
+            Toast.makeText(this@MainActivity, PlayOnTvMessages.of(outcome, tv.name, title), if (ok) Toast.LENGTH_SHORT else Toast.LENGTH_LONG).show()
+            refreshLinkedDevices()
+        }
+    }
+
+    private val libraryActions by lazy {
+        LibraryActions(
+            play = { mediaItemId, title, startPositionMs -> launchPlayer(mediaItemId, title, startPositionMs) },
+            pairTv = ::openPhonePairingDialog,
+            playOnTv = ::playOnTv,
+            canPlayOnTv = { !isTvDevice && linkedTvs.value.isNotEmpty() },
+            onHomeReady = ::reportFullyDrawnOnce
+        )
+    }
+
+    /** Task P.2: what the Settings and Local folders screens do (the Account dialog's callbacks before). */
+    private val settingsActions by lazy {
+        SettingsActions(
+            refreshLibrary = ::refreshLibrary,
+            switchLibraryFolder = ::startLibrarySwitch,
+            reviewDuplicates = ::openDuplicateReview,
+            openLocalFolders = { navigator.open(Screen.LocalFolders) },
+            addLocalFolder = ::launchLocalFolderPicker,
+            removeLocalFolder = ::removeLocalFolder,
+            openFoldersHelp = { navigator.open(Screen.HelpTopic(SetupGuideContent.FOLDERS)) },
+            openPcs = { navigator.open(Screen.Pcs) },
+            pairTv = ::openPhonePairingDialog,
+            setSkipIntro = { enabled ->
+                settings.skipIntroEnabled.value = enabled
+                SkipIntroSetting(this).setEnabled(enabled)
+            },
+            setDeviceSync = ::onDeviceSyncChange,
+            openLinkedDevices = {
+                refreshLinkedDevices()
+                showLinkedDevicesDialog.value = true
+            },
+            openNamingHelper = { navigator.open(Screen.NamingHelper) },
+            openHelp = ::openSetupGuide,
+            openAbout = { navigator.open(Screen.HelpTopic(SetupGuideContent.ABOUT)) },
+            onOpen = {
+                settings.skipIntroEnabled.value = SkipIntroSetting(this).isEnabled()
+                updatePcRows()
+            },
+            signOut = ::handleSignOut,
+            back = { navigator.back() }
+        )
+    }
+
+    /** Task P.3: what My PCs does (the popup's callbacks before); pairing and the connections themselves are unchanged. */
+    private val pcsActions by lazy {
+        PcsActions(
+            search = ::searchPcs,
+            pair = ::pairPc,
+            setVpnAddress = { hostId, address ->
+                lifecycleScope.launch {
+                    withContext(Dispatchers.IO) { hostSync.setVpnAddress(hostId, address) }
+                    updatePcRows()
+                    syncPcs()
+                }
+            },
+            remove = { hostId ->
+                lifecycleScope.launch {
+                    withContext(Dispatchers.IO) { hostSync.remove(hostId) }
+                    pcStatus.remove(hostId)
+                    updatePcRows()
+                }
+            },
+            checkNow = ::syncPcs,
+            onOpen = {
+                settings.pcs.notice.value = null
+                updatePcRows()
+            },
+            back = { navigator.back() }
+        )
+    }
+
+    /** Copies in the removed folder stop being playable; titles and watch progress are kept. */
+    private fun removeLocalFolder(folderUri: Uri) {
+        lifecycleScope.launch {
+            settings.localFolders.value = withContext(Dispatchers.IO) {
+                localFolderPreferences.removeFolderUri(folderUri)
+                localIndexer.retireUnsavedFolders(localFolderPreferences.getAllFolderUris())
+                localFolderPreferences.getAllFolders()
+            }
+        }
+    }
+
+    private val setupActions by lazy {
+        SetupActions(
+            signIn = ::launchGoogleSignIn,
+            pair = { if (isTvDevice) startTvPairing() else openPhonePairingDialog() },
+            openGuide = ::openSetupGuide,
+            openHelpTopic = { id -> navigator.open(Screen.HelpTopic(id)) },
+            chooseFolder = ::onFolderChosen,
+            reloadFolders = {
+                val creds = credentialStore.getCredentials()
+                if (creds != null) {
+                    if (setup.isSwitchingLibrary.value) {
+                        loadFoldersForSwitch(creds.refreshToken)
+                    } else {
+                        refreshTokenAndLoadFolders(creds.refreshToken)
+                    }
+                }
+            },
+            signOut = ::handleSignOut,
+            cancelLibrarySwitch = ::cancelLibrarySwitch,
+            currentFolderId = { credentialStore.getCredentials()?.rootFolderId },
+            confirmSameTitle = { sourceKey, itemId ->
+                resolveDuplicate { database.mediaSourceDao().confirmSameTitle(sourceKey, itemId) }
+            },
+            keepSeparate = { sourceKey -> resolveDuplicate { database.mediaSourceDao().deletePendingMatch(sourceKey) } },
+            back = { navigator.back() }
+        )
+    }
+
     @Composable
     private fun MainAppContent() {
-        val homeState by homeViewModel.uiState.collectAsStateWithLifecycle()
-        val searchViewModel = remember { SearchViewModel(database.mediaDao()) }
-        val searchState by searchViewModel.uiState.collectAsStateWithLifecycle()
-        var selectedMobileTab by remember { mutableStateOf(MobileTab.HOME) }
-
-        // System Back / Predictive Back Gesture & Remote Key Handling
+        // Back closes an open dialog first; screens are popped by the NavDisplay in AppNavDisplay (Task M.3).
         when {
             showTvStorageUnsupportedDialog.value -> {
                 BackHandler { showTvStorageUnsupportedDialog.value = false }
             }
-            showAccountDialog.value -> {
-                BackHandler { showAccountDialog.value = false }
-            }
             showPhonePairingDialog.value -> {
                 BackHandler { showPhonePairingDialog.value = false }
+            }
+            showLinkedDevicesDialog.value -> {
+                BackHandler { showLinkedDevicesDialog.value = false }
             }
             showTvPairingDialog.value -> {
                 BackHandler {
@@ -494,255 +786,23 @@ class MainActivity : ComponentActivity() {
                     showTvPairingDialog.value = false
                 }
             }
-            currentScreen.value is AppScreen.Duplicates -> {
-                BackHandler { currentScreen.value = AppScreen.Home }
-            }
-            currentScreen.value is AppScreen.SetupGuide -> {
-                BackHandler { closeSetupGuide() }
-            }
-            currentScreen.value is AppScreen.FolderPicker && isSwitchingLibrary.value -> {
-                BackHandler { cancelLibrarySwitch() }
-            }
-            currentScreen.value is AppScreen.MovieDetails -> {
-                BackHandler { currentScreen.value = AppScreen.Home }
-            }
-            currentScreen.value is AppScreen.SeriesDetails -> {
-                BackHandler { currentScreen.value = AppScreen.Home }
-            }
-            currentScreen.value is AppScreen.TvGrid -> {
-                BackHandler { currentScreen.value = AppScreen.Home }
-            }
-            currentScreen.value is AppScreen.TvSearch -> {
-                BackHandler { currentScreen.value = AppScreen.Home }
-            }
-            currentScreen.value is AppScreen.Home && !isTvDevice && selectedMobileTab != MobileTab.HOME -> {
-                BackHandler { selectedMobileTab = MobileTab.HOME }
-            }
         }
 
         Box(modifier = Modifier.fillMaxSize().background(Color(0xFF0C0D10))) {
-            when (val screen = currentScreen.value) {
-                is AppScreen.SignIn -> {
-                    SignInScreen(
-                        isLoading = isAuthLoading.value,
-                        errorMessage = authErrorMessage.value,
-                        onSignInClick = { launchGoogleSignIn() },
-                        onPairingClick = {
-                            if (isTvDevice) {
-                                startTvPairing()
-                            } else {
-                                openPhonePairingDialog()
-                            }
-                        },
-                        pairingButtonText = if (isTvDevice) "Pair with Phone" else "Pair with TV",
-                        onOpenGuideClick = { openSetupGuide() },
-                        options = signInOptions
-                    )
-                }
-
-                is AppScreen.FolderPicker -> {
-                    FolderPickerScreen(
-                        folders = driveFolders.value,
-                        isLoading = isFolderLoading.value,
-                        isValidating = isFolderValidating.value,
-                        errorMessage = folderErrorMessage.value,
-                        onFolderSelected = { folder -> onFolderChosen(folder) },
-                        onRefreshClick = {
-                            val creds = credentialStore.getCredentials()
-                            if (creds != null) {
-                                if (isSwitchingLibrary.value) {
-                                    loadFoldersForSwitch(creds.refreshToken)
-                                } else {
-                                    refreshTokenAndLoadFolders(creds.refreshToken)
-                                }
-                            }
-                        },
-                        onSignOutClick = {
-                            handleSignOut()
-                        },
-                        currentFolderId = if (isSwitchingLibrary.value) {
-                            credentialStore.getCredentials()?.rootFolderId
-                        } else null,
-                        busyMessage = if (isSwitchingLibrary.value) "Indexing library folder..." else null,
-                        onCancelClick = if (isSwitchingLibrary.value) {
-                            { cancelLibrarySwitch() }
-                        } else null,
-                        onOpenGuideClick = { openSetupGuide() }
-                    )
-                }
-
-                is AppScreen.Home -> {
-                    if (isTvDevice) {
-                        TvHomeScreen(
-                            state = homeState,
-                            onMovieClick = { movie -> currentScreen.value = AppScreen.MovieDetails(movie) },
-                            onSeriesClick = { series -> currentScreen.value = AppScreen.SeriesDetails(series) },
-                            onContinueWatchingClick = { item ->
-                                launchPlayer(item.id, ContinueWatching.playerTitle(item), item.positionMs)
-                            },
-                            onFilmsHeaderClick = {
-                                val gridItems = homeState.movies.map {
-                                    TvGridItem(it.id, it.title, it.posterPath, it.backdropPath)
-                                }
-                                currentScreen.value = AppScreen.TvGrid("Films", gridItems)
-                            },
-                            onSeriesHeaderClick = {
-                                val gridItems = homeState.series.map {
-                                    TvGridItem(it.id, it.title, it.posterPath, it.backdropPath)
-                                }
-                                currentScreen.value = AppScreen.TvGrid("Series", gridItems)
-                            },
-                            onSearchClick = {
-                                currentScreen.value = AppScreen.TvSearch
-                            },
-                            onAccountClick = {
-                                showAccountDialog.value = true
-                            }
-                        )
-                    } else {
-                        // Mobile Layout with Bottom Navigation
-                        Scaffold(
-                            bottomBar = {
-                                MobileBottomNav(
-                                    selectedTab = selectedMobileTab,
-                                    onTabSelected = { selectedMobileTab = it }
-                                )
-                            },
-                            containerColor = Color(0xFF0C0D10)
-                        ) { innerPadding ->
-                            when (selectedMobileTab) {
-                                MobileTab.HOME -> {
-                                    MobileHomeScreen(
-                                        state = homeState,
-                                        onMovieClick = { movie -> currentScreen.value = AppScreen.MovieDetails(movie) },
-                                        onSeriesClick = { series -> currentScreen.value = AppScreen.SeriesDetails(series) },
-                                        onContinueWatchingClick = { item ->
-                                            launchPlayer(item.id, ContinueWatching.playerTitle(item), item.positionMs)
-                                        },
-                                        onPairTvClick = { openPhonePairingDialog() },
-                                        onAccountClick = { showAccountDialog.value = true },
-                                        modifier = Modifier.padding(innerPadding)
-                                    )
-                                }
-                                MobileTab.LIBRARY -> {
-                                    FullLibraryGridScreen(
-                                        movies = homeState.movies,
-                                        series = homeState.series,
-                                        onMovieClick = { movie -> currentScreen.value = AppScreen.MovieDetails(movie) },
-                                        onSeriesClick = { series -> currentScreen.value = AppScreen.SeriesDetails(series) },
-                                        modifier = Modifier.padding(innerPadding)
-                                    )
-                                }
-                                MobileTab.SEARCH -> {
-                                    SearchScreen(
-                                        state = searchState,
-                                        onQueryChange = { q -> searchViewModel.onQueryChanged(q) },
-                                        onClearQuery = { searchViewModel.clearQuery() },
-                                        onMovieClick = { movie -> currentScreen.value = AppScreen.MovieDetails(movie) },
-                                        onSeriesClick = { series -> currentScreen.value = AppScreen.SeriesDetails(series) },
-                                        modifier = Modifier.padding(innerPadding)
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-
-                is AppScreen.MovieDetails -> {
-                    val detailsViewModel = remember {
-                        DetailsViewModel(database.mediaDao(), database.playbackProgressDao()) { database.mediaSourceDao().getLatestProgressForItem(it) }
-                    }
-                    LaunchedEffect(screen.movie.id) {
-                        detailsViewModel.loadMovie(screen.movie.id)
-                    }
-                    val detailsState by detailsViewModel.movieState.collectAsStateWithLifecycle()
-
-                    MovieDetailsScreen(
-                        movie = detailsState.movie ?: screen.movie,
-                        progress = detailsState.progress,
-                        onPlayClick = { startPos ->
-                            launchPlayer(screen.movie.id, screen.movie.title, startPos)
-                        },
-                        onBackClick = { currentScreen.value = AppScreen.Home }
-                    )
-                }
-
-                is AppScreen.SeriesDetails -> {
-                    val detailsViewModel = remember {
-                        DetailsViewModel(database.mediaDao(), database.playbackProgressDao()) { database.mediaSourceDao().getLatestProgressForItem(it) }
-                    }
-                    LaunchedEffect(screen.series.id) {
-                        detailsViewModel.loadSeries(screen.series.id)
-                    }
-                    val detailsState by detailsViewModel.seriesState.collectAsStateWithLifecycle()
-
-                    SeriesDetailsScreen(
-                        series = detailsState.series ?: screen.series,
-                        state = detailsState,
-                        onSeasonSelect = { season -> detailsViewModel.selectSeason(season) },
-                        onEpisodeClick = { episode ->
-                            val fileId = episode.id
-                            if (!fileId.isNullOrEmpty()) {
-                                val currentSeries = detailsState.series ?: screen.series
-                                val epTitle = if (episode.title.isNotEmpty()) {
-                                    "${currentSeries.title} - S${episode.season}E${episode.episode} ${episode.title}"
-                                } else {
-                                    "${currentSeries.title} - S${episode.season}E${episode.episode}"
-                                }
-                                launchPlayer(fileId, epTitle, episode.positionMs)
-                            }
-                        },
-                        onBackClick = { currentScreen.value = AppScreen.Home }
-                    )
-                }
-
-                is AppScreen.TvGrid -> {
-                    TvCollectionGridScreen(
-                        title = screen.title,
-                        items = screen.items,
-                        onItemClick = { gridItem ->
-                            val movie = homeState.movies.find { it.id == gridItem.id }
-                            if (movie != null) {
-                                currentScreen.value = AppScreen.MovieDetails(movie)
-                            } else {
-                                val series = homeState.series.find { it.id == gridItem.id }
-                                if (series != null) {
-                                    currentScreen.value = AppScreen.SeriesDetails(series)
-                                }
-                            }
-                        },
-                        onBackClick = { currentScreen.value = AppScreen.Home }
-                    )
-                }
-
-                is AppScreen.Duplicates -> {
-                    DuplicatesScreen(
-                        reviews = duplicateReviews.value,
-                        onSameTitle = { sourceKey, itemId ->
-                            resolveDuplicate { database.mediaSourceDao().confirmSameTitle(sourceKey, itemId) }
-                        },
-                        onKeepSeparate = { sourceKey ->
-                            resolveDuplicate { database.mediaSourceDao().deletePendingMatch(sourceKey) }
-                        },
-                        onBackClick = { currentScreen.value = AppScreen.Home }
-                    )
-                }
-
-                is AppScreen.SetupGuide -> {
-                    SetupGuideScreen(onBackClick = { closeSetupGuide() })
-                }
-
-                is AppScreen.TvSearch -> {
-                    TvSearchScreen(
-                        state = searchState,
-                        onQueryChange = { q -> searchViewModel.onQueryChanged(q) },
-                        onClearQuery = { searchViewModel.clearQuery() },
-                        onMovieClick = { movie -> currentScreen.value = AppScreen.MovieDetails(movie) },
-                        onSeriesClick = { series -> currentScreen.value = AppScreen.SeriesDetails(series) },
-                        onBackClick = { currentScreen.value = AppScreen.Home }
-                    )
-                }
-            }
+            AppNavDisplay(
+                navigator = navigator,
+                isTv = isTvDevice,
+                homeState = homeViewModel.uiState,
+                searchViewModel = searchViewModel,
+                newDetailsViewModel = { DetailsViewModel.from(database) },
+                actions = libraryActions,
+                setup = setup,
+                setupActions = setupActions,
+                settings = settings,
+                settingsActions = settingsActions,
+                pcsActions = pcsActions,
+                naming = namingDeps
+            )
 
             // TV Pairing Dialog
             if (showTvPairingDialog.value) {
@@ -750,6 +810,7 @@ class MainActivity : ComponentActivity() {
                     pin = tvPairingPin.value,
                     statusText = tvPairingStatus.value,
                     serverAddress = tvPairingAddress.value,
+                    title = if (tvPairingLinkOnly.value) LinkedDevicesTexts.TV_ADD else "Pair with Phone",
                     onDismissRequest = {
                         tvPairingServer?.stopServer()
                         showTvPairingDialog.value = false
@@ -769,12 +830,22 @@ class MainActivity : ComponentActivity() {
                             phonePairingError.value = null
                             lifecycleScope.launch {
                                 val client = PhonePairingClient(this@MainActivity)
-                                val result = client.pairWithTv(host, port, pin, creds)
+                                // Milestone D: link for Play on TV in the same step (this phone's ID, name and a new key).
+                                val tvStore = DeviceLinkStore.tvs(this@MainActivity)
+                                val offer = withContext(Dispatchers.IO) {
+                                    DeviceLink(tvStore.selfId(), DeviceLinkStore.deviceName(this@MainActivity), DeviceLink.newKey())
+                                }
+                                val result = client.pairWithTv(host, port, pin, creds, offer)
                                 isPhonePairing.value = false
                                 result.fold(
-                                    onSuccess = {
+                                    onSuccess = { tv ->
                                         showPhonePairingDialog.value = false
-                                        Toast.makeText(this@MainActivity, "Paired successfully with TV!", Toast.LENGTH_SHORT).show()
+                                        if (tv != null) {
+                                            withContext(Dispatchers.IO) { tvStore.save(tv) }
+                                            refreshLinkedDevices()
+                                        }
+                                        val text = if (tv != null) "Paired with ${tv.name}. Play on TV is ready." else PlayOnTvMessages.OLD_TV
+                                        Toast.makeText(this@MainActivity, text, Toast.LENGTH_LONG).show()
                                     },
                                     onFailure = { err ->
                                         phonePairingError.value = when (err) {
@@ -792,48 +863,27 @@ class MainActivity : ComponentActivity() {
                 )
             }
 
-            // Google Account Dialog
-            if (showAccountDialog.value) {
-                AccountDialog(
-                    account = homeState.account,
-                    onSignOutClick = {
-                        showAccountDialog.value = false
-                        handleSignOut()
+            // Milestone D: "My TVs" (phone) / "Linked phones" (TV)
+            if (showLinkedDevicesDialog.value) {
+                LinkedDevicesDialog(
+                    title = if (isTvDevice) LinkedDevicesTexts.TV_TITLE else LinkedDevicesTexts.PHONE_TITLE,
+                    explanation = if (isTvDevice) LinkedDevicesTexts.TV_EXPLAIN else LinkedDevicesTexts.PHONE_EXPLAIN,
+                    emptyText = if (isTvDevice) LinkedDevicesTexts.TV_EMPTY else LinkedDevicesTexts.PHONE_EMPTY,
+                    addLabel = if (isTvDevice) LinkedDevicesTexts.TV_ADD else LinkedDevicesTexts.PHONE_ADD,
+                    devices = if (isTvDevice) linkedPhones.value else linkedTvs.value,
+                    onAdd = {
+                        showLinkedDevicesDialog.value = false
+                        if (isTvDevice) startTvPairing(linkOnly = true) else openPhonePairingDialog()
                     },
-                    onSwitchLibraryClick = if (homeState.account.isConnected) {
-                        { startLibrarySwitch() }
-                    } else null,
-                    onRefreshLibraryClick = if (homeState.account.isConnected) {
-                        { refreshLibrary() }
-                    } else null,
-                    isRefreshingLibrary = isRefreshingLibrary.value,
-                    onOpenGuideClick = {
-                        showAccountDialog.value = false
-                        openSetupGuide()
-                    },
-                    onAddLocalFolderClick = { launchLocalFolderPicker() },
-                    savedLocalFolders = localFoldersState.value,
-                    onRemoveLocalFolderClick = { folderUri ->
+                    onRemove = { id ->
                         lifecycleScope.launch {
-                            localFoldersState.value = withContext(Dispatchers.IO) {
-                                localFolderPreferences.removeFolderUri(folderUri)
-                                // Copies in the removed folder stop being playable; titles/progress are kept.
-                                localIndexer.retireUnsavedFolders(localFolderPreferences.getAllFolderUris())
-                                localFolderPreferences.getAllFolders()
+                            withContext(Dispatchers.IO) {
+                                (if (isTvDevice) DeviceLinkStore.phones(this@MainActivity) else DeviceLinkStore.tvs(this@MainActivity)).remove(id)
                             }
+                            refreshLinkedDevices()
                         }
                     },
-                    pendingDuplicateCount = pendingDuplicateCount.value,
-                    onReviewDuplicatesClick = {
-                        showAccountDialog.value = false
-                        openDuplicateReview()
-                    },
-                    isTvDevice = isTvDevice,
-                    isTvStorageSupported = isTvStorageSupported,
-                    onTvStorageUnsupportedClick = {
-                        showTvStorageUnsupportedDialog.value = true
-                    },
-                    onDismissRequest = { showAccountDialog.value = false }
+                    onDismissRequest = { showLinkedDevicesDialog.value = false }
                 )
             }
 
@@ -847,14 +897,15 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun launchGoogleSignIn() {
+        val signInOptions = setup.signInOptions.value
         if (!signInOptions.showGoogleSignIn) {
-            // TV without Play Services: the Google sign-in flow would fail, pairing is the way in.
-            authErrorMessage.value = SignInOptions.NO_PLAY_SERVICES_NOTICE
+            // TVs sign in by pairing only (Task J.6); the notice says why.
+            setup.authErrorMessage.value = signInOptions.notice ?: SignInOptions.TV_GOOGLE_SIGN_IN_UNAVAILABLE_NOTICE
             return
         }
         try {
-            isAuthLoading.value = true
-            authErrorMessage.value = null
+            setup.isAuthLoading.value = true
+            setup.authErrorMessage.value = null
             if (isTvDevice) {
                 val intent = authManager.getTvSignInIntent(this)
                 tvSignInLauncher.launch(intent)
@@ -863,14 +914,14 @@ class MainActivity : ComponentActivity() {
                 authResultLauncher.launch(intent)
             }
         } catch (e: Exception) {
-            isAuthLoading.value = false
-            authErrorMessage.value = "Failed to launch sign-in: ${e.message}"
+            setup.isAuthLoading.value = false
+            setup.authErrorMessage.value = "Failed to launch sign-in: ${e.message}"
         }
     }
 
     private fun loadFoldersAndProceed(accessToken: String) {
-        isFolderLoading.value = true
-        folderErrorMessage.value = null
+        setup.isFolderLoading.value = true
+        setup.folderErrorMessage.value = null
         fetchAndCacheUserIdentity(accessToken)
 
         lifecycleScope.launch {
@@ -881,29 +932,29 @@ class MainActivity : ComponentActivity() {
                 if (existingCreds != null) {
                     credentialStore.saveCredentials(existingCreds.copy(rootFolderId = autoDiscovered.id))
                 }
-                isFolderLoading.value = false
-                currentScreen.value = AppScreen.Home
+                setup.isFolderLoading.value = false
+                navigator.resetTo(Screen.Home)
                 triggerBackgroundSync(existingCreds?.refreshToken ?: "", autoDiscovered.id)
                 return@launch
             }
 
             // 2. Fall back to manual folder picker if auto-discovery finds 0 or ambiguous matches
-            currentScreen.value = AppScreen.FolderPicker
+            navigator.resetTo(Screen.FolderPicker)
             val result = driveGateway.listRootFolders(accessToken)
-            isFolderLoading.value = false
+            setup.isFolderLoading.value = false
             result.fold(
                 onSuccess = { folders ->
-                    driveFolders.value = folders
+                    setup.driveFolders.value = folders
                 },
                 onFailure = { err ->
-                    folderErrorMessage.value = "Could not list Google Drive folders: ${err.message}"
+                    setup.folderErrorMessage.value = "Could not list Google Drive folders: ${err.message}"
                 }
             )
         }
     }
 
     private fun refreshTokenAndLoadFolders(refreshToken: String) {
-        isFolderLoading.value = true
+        setup.isFolderLoading.value = true
         authManager.refreshAccessToken(this, GOOGLE_CLIENT_ID, refreshToken) { result ->
             result.fold(
                 onSuccess = { token ->
@@ -912,8 +963,8 @@ class MainActivity : ComponentActivity() {
                 },
                 onFailure = { err ->
                     runOnUiThread {
-                        isFolderLoading.value = false
-                        folderErrorMessage.value = "Token refresh failed: ${err.message}"
+                        setup.isFolderLoading.value = false
+                        setup.folderErrorMessage.value = "Token refresh failed: ${err.message}"
                     }
                 }
             )
@@ -921,22 +972,22 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun onFolderChosen(folder: DriveFolder) {
-        if (isSwitchingLibrary.value) {
+        if (setup.isSwitchingLibrary.value) {
             switchLibraryFolder(folder)
             return
         }
         val token = cachedAccessToken
         if (token.isEmpty()) {
-            folderErrorMessage.value = "Missing session token. Please re-authenticate."
+            setup.folderErrorMessage.value = "Missing session token. Please re-authenticate."
             return
         }
 
-        isFolderValidating.value = true
-        folderErrorMessage.value = null
+        setup.isFolderValidating.value = true
+        setup.folderErrorMessage.value = null
 
         lifecycleScope.launch {
             val result = driveGateway.validateStreamingFolder(folder.id, token)
-            isFolderValidating.value = false
+            setup.isFolderValidating.value = false
 
             result.fold(
                 onSuccess = { validation ->
@@ -949,66 +1000,58 @@ class MainActivity : ComponentActivity() {
                                     existingCreds.copy(rootFolderId = folder.id)
                                 )
                             }
-                            currentScreen.value = AppScreen.Home
+                            navigator.resetTo(Screen.Home)
                             triggerBackgroundSync(existingCreds?.refreshToken ?: "", folder.id)
                         }
                         is FolderValidationResult.Invalid -> {
-                            folderErrorMessage.value = "Selected folder '${folder.name}' is invalid: ${validation.reason}. Ensure it contains video files or 'Films' / 'Series' subfolders."
+                            setup.folderErrorMessage.value = "Selected folder '${folder.name}' is invalid: ${validation.reason}. Ensure it contains video files or 'Films' / 'Series' subfolders."
                         }
                     }
                 },
                 onFailure = { err ->
-                    folderErrorMessage.value = "Validation failed: ${err.message}"
+                    setup.folderErrorMessage.value = "Validation failed: ${err.message}"
                 }
             )
         }
     }
 
     private fun openSetupGuide() {
-        val from = currentScreen.value
-        if (from !is AppScreen.SetupGuide) {
-            currentScreen.value = AppScreen.SetupGuide(returnTo = from)
-        }
-    }
-
-    private fun closeSetupGuide() {
-        (currentScreen.value as? AppScreen.SetupGuide)?.let { currentScreen.value = it.returnTo }
+        navigator.open(Screen.SetupGuide)
     }
 
     private fun startLibrarySwitch() {
-        showAccountDialog.value = false
         val creds = credentialStore.getCredentials()
         if (creds == null || creds.refreshToken.isEmpty()) {
             handleSignOut()
             return
         }
-        isSwitchingLibrary.value = true
-        driveFolders.value = emptyList()
-        folderErrorMessage.value = null
-        currentScreen.value = AppScreen.FolderPicker
+        setup.isSwitchingLibrary.value = true
+        setup.driveFolders.value = emptyList()
+        setup.folderErrorMessage.value = null
+        navigator.open(Screen.FolderPicker)
         loadFoldersForSwitch(creds.refreshToken)
     }
 
     /** Lists owned + shared folders without auto-discovery, reusing the stored session (no re-auth). */
     private fun loadFoldersForSwitch(refreshToken: String) {
         folderSwitchJob?.cancel()
-        isFolderValidating.value = false
-        isFolderLoading.value = true
-        folderErrorMessage.value = null
+        setup.isFolderValidating.value = false
+        setup.isFolderLoading.value = true
+        setup.folderErrorMessage.value = null
         folderSwitchJob = lifecycleScope.launch {
             val token = obtainAccessToken(refreshToken).getOrNull()
             if (token.isNullOrEmpty()) {
-                isFolderLoading.value = false
-                folderErrorMessage.value = "Couldn't refresh your Google session. Check your connection and try again."
+                setup.isFolderLoading.value = false
+                setup.folderErrorMessage.value = "Couldn't refresh your Google session. Check your connection and try again."
                 return@launch
             }
             cachedAccessToken = token
             val result = driveGateway.listRootFolders(token)
-            isFolderLoading.value = false
+            setup.isFolderLoading.value = false
             result.fold(
-                onSuccess = { folders -> driveFolders.value = folders },
+                onSuccess = { folders -> setup.driveFolders.value = folders },
                 onFailure = { err ->
-                    folderErrorMessage.value = LibraryFolderSwitcher.describeDriveError("your Google Drive", err)
+                    setup.folderErrorMessage.value = LibraryFolderSwitcher.describeDriveError("your Google Drive", err)
                 }
             )
         }
@@ -1022,11 +1065,11 @@ class MainActivity : ComponentActivity() {
         folderSwitchJob?.cancel()
         // Stop any in-flight sync of the previous folder so it can't write stale results after the switch.
         librarySyncJob?.cancel()
-        isFolderValidating.value = true
-        folderErrorMessage.value = null
+        setup.isFolderValidating.value = true
+        setup.folderErrorMessage.value = null
         folderSwitchJob = lifecycleScope.launch {
             val result = folderSwitcher.switchTo(folder, cachedAccessToken)
-            isFolderValidating.value = false
+            setup.isFolderValidating.value = false
             when (result) {
                 is FolderSwitchResult.Switched -> {
                     finishLibrarySwitch()
@@ -1041,24 +1084,40 @@ class MainActivity : ComponentActivity() {
                     }
                 }
                 is FolderSwitchResult.Rejected -> {
-                    folderErrorMessage.value = result.message
+                    setup.folderErrorMessage.value = result.message
                 }
             }
         }
     }
 
+    /** Back or Cancel in the folder picker: the library stays as it was and Back returns to Settings (Task P.2). */
     private fun cancelLibrarySwitch() {
         folderSwitchJob?.cancel()
         folderSwitchJob = null
-        finishLibrarySwitch()
+        clearLibrarySwitch()
+        navigator.backOrResetTo(Screen.Home)
     }
 
+    /** A new library folder is in use: start again from its Home. */
     private fun finishLibrarySwitch() {
-        isSwitchingLibrary.value = false
-        isFolderLoading.value = false
-        isFolderValidating.value = false
-        folderErrorMessage.value = null
-        currentScreen.value = AppScreen.Home
+        clearLibrarySwitch()
+        navigator.resetTo(Screen.Home)
+    }
+
+    private fun clearLibrarySwitch() {
+        setup.isSwitchingLibrary.value = false
+        setup.isFolderLoading.value = false
+        setup.isFolderValidating.value = false
+        setup.folderErrorMessage.value = null
+    }
+
+    private var fullyDrawnReported = false
+
+    /** Task M.0: Home has content for the first time; Logcat's "Fully drawn" line and `am start -W` see it. */
+    private fun reportFullyDrawnOnce() {
+        if (fullyDrawnReported) return
+        fullyDrawnReported = true
+        reportFullyDrawn()
     }
 
     private suspend fun obtainAccessToken(refreshToken: String): Result<String> =
@@ -1068,56 +1127,147 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-    /** "Refresh Library" in the Account dialog: same sync as app start, on demand (Task H.1). */
+    /** "Refresh library" in Settings: same sync as app start, on demand (Task H.1). */
+    // ---- Task I.2: paired PCs ----
+
+    private fun updatePcRows() {
+        settings.pcs.rows.value = hostSync.hosts().map {
+            val hostId = it.pairing.hostId
+            PcRow(hostId, it.pairing.hostName, it.homeAddress, it.vpnAddress, pcStatus[hostId] ?: PcConnection.NotChecked)
+        }
+    }
+
+    /** Re-reads every paired PC's folders; a PC that can't be reached has its copies set aside (Drive copies still play). */
+    private fun syncPcs() {
+        settings.pcs.isChecking.value = true
+        lifecycleScope.launch {
+            val results = withContext(Dispatchers.IO) { runCatching { hostSync.syncAll() }.getOrDefault(emptyList()) }
+            val hosts = hostSync.hosts().associateBy { it.pairing.hostId }
+            results.filter { it.removedByPc }.forEach {
+                pcStatus.remove(it.hostId)
+                settings.pcs.notice.value =
+                    PcsNotice("${it.hostName} removed this device. Pair again to play its films.", DcBannerKind.Warning)
+            }
+            results.filterNot { it.removedByPc }.forEach { result ->
+                val viaVpn = result.reachableAt != null && result.reachableAt == hosts[result.hostId]?.vpnAddress
+                pcStatus[result.hostId] = when {
+                    result.reachableAt == null -> PcConnection.Unreachable
+                    viaVpn -> PcConnection.OverVpn(result.videosFound)
+                    else -> PcConnection.AtHome(result.videosFound)
+                }
+            }
+            updatePcRows()
+        }.invokeOnCompletion { settings.pcs.isChecking.value = false }
+    }
+
+    private fun searchPcs() {
+        val pcs = settings.pcs
+        pcs.isSearching.value = true
+        pcs.notice.value = null
+        lifecycleScope.launch {
+            val found = withContext(Dispatchers.IO) { runCatching { HostDiscoveryClient.discover() }.getOrDefault(emptyList()) }
+            pcs.discovered.value = found
+            pcs.isSearching.value = false
+            if (found.isEmpty()) {
+                pcs.notice.value = PcsNotice("No PC found. Is sharing on there? You can also type its address.", DcBannerKind.Warning)
+            }
+        }
+    }
+
+    private fun pairPc(address: String, code: String, vpnAddress: String) {
+        val pcs = settings.pcs
+        pcs.isPairing.value = true
+        pcs.notice.value = null
+        lifecycleScope.launch {
+            val deviceName = listOf(android.os.Build.MANUFACTURER, android.os.Build.MODEL).joinToString(" ").trim()
+            val result = withContext(Dispatchers.IO) { runCatching { hostSync.pair(address, code, deviceName, vpnAddress) } }
+            pcs.isPairing.value = false
+            result.onSuccess {
+                pcs.notice.value = PcsNotice("Paired with ${it.pairing.hostName}. Loading its films…")
+                pcs.pairedCount.value++
+                syncPcs()
+            }.onFailure {
+                pcs.notice.value = PcsNotice((it as? HostPairingException)?.message ?: "Pairing failed. Try again.", DcBannerKind.Error)
+            }
+            updatePcRows()
+        }
+    }
+
     private fun refreshLibrary() {
         val credentials = credentialStore.getCredentials() ?: return
-        if (isRefreshingLibrary.value || credentials.rootFolderId.isEmpty()) return
+        if (settings.isRefreshingLibrary.value || credentials.rootFolderId.isEmpty()) return
         librarySyncJob?.cancel()
-        isRefreshingLibrary.value = true
+        settings.isRefreshingLibrary.value = true
         librarySyncJob = lifecycleScope.launch {
-            // Always fetch a fresh token: the cached one may have expired while the app was open.
-            val token = obtainAccessToken(credentials.refreshToken).getOrNull()
-            if (!token.isNullOrEmpty()) cachedAccessToken = token
-            val result = withContext(Dispatchers.IO) { libraryRefresher.refresh(credentials.rootFolderId, token) }
-            isRefreshingLibrary.value = false
+            val result = Perf.measure("sync.refresh") { span ->
+                // Always fetch a fresh token: the cached one may have expired while the app was open.
+                val token = Perf.measure("sync.token") { obtainAccessToken(credentials.refreshToken).getOrNull() }
+                if (!token.isNullOrEmpty()) cachedAccessToken = token
+                withContext(Dispatchers.IO) { libraryRefresher.refresh(credentials.rootFolderId, token) }
+                    .also { span.put("ok", it == LibraryRefreshResult.Refreshed) }
+            }
+            settings.isRefreshingLibrary.value = false
             val message = when (result) {
                 LibraryRefreshResult.Refreshed -> "Library refreshed"
                 is LibraryRefreshResult.Failed -> result.message
             }
             Toast.makeText(this@MainActivity, message, Toast.LENGTH_SHORT).show()
-        }.also { job -> job.invokeOnCompletion { isRefreshingLibrary.value = false } }
+            syncPcs()
+            deviceSync.syncNow(Trigger.REFRESH)
+        }.also { job -> job.invokeOnCompletion { settings.isRefreshingLibrary.value = false } }
     }
 
     private fun triggerBackgroundSync(refreshToken: String, rootFolderId: String) {
         librarySyncJob?.cancel()
         librarySyncJob = lifecycleScope.launch(Dispatchers.IO) {
-            // Enrich any existing catalog items in SQLite immediately
-            syncEngine.enrichExistingCatalog()
-
-            // Suspends instead of blocking a thread, and waits long enough for a slow network (report F-06).
-            val token = StartupToken.obtain(cachedAccessToken, refresh = { obtainAccessToken(refreshToken) })
-            if (token != null) {
-                cachedAccessToken = token
-                fetchAndCacheUserIdentity(token)
-                val validation = driveGateway.validateStreamingFolder(rootFolderId, token).getOrNull()
-                if (validation is FolderValidationResult.Valid) {
-                    syncEngine.executeInitialCrawl(validation.filmsFolderId, validation.seriesFolderId, token, rootFolderId)
-                        .onSuccess { StartupSyncGate.process.markSynced(rootFolderId) }
-                }
+            Perf.measure("sync.startup") { span ->
+                // Drive first; TMDB enrichment runs inside the crawl, or alone when no crawl completed (Task N.2).
+                StartupSync.run(
+                    syncDrive = syncDrive@{
+                        // Suspends instead of blocking a thread, and waits long enough for a slow network (report F-06).
+                        val token = Perf.measure("sync.token") {
+                            StartupToken.obtain(cachedAccessToken, refresh = { obtainAccessToken(refreshToken) })
+                        }
+                        if (token == null) return@syncDrive false
+                        cachedAccessToken = token
+                        fetchAndCacheUserIdentity(token)
+                        val validation = Perf.measure("sync.folderCheck") {
+                            driveGateway.validateStreamingFolder(rootFolderId, token).getOrNull()
+                        }
+                        if (validation !is FolderValidationResult.Valid) return@syncDrive false
+                        syncEngine.executeInitialCrawl(validation.filmsFolderId, validation.seriesFolderId, token, rootFolderId)
+                            .onSuccess { StartupSyncGate.process.markSynced(rootFolderId) }
+                            .also { span.put("ok", it.isSuccess) }
+                            .isSuccess
+                    },
+                    enrich = { syncEngine.enrichExistingCatalog() }
+                )
             }
+            // Milestone Q: after the library, so the other devices' titles are known here.
+            deviceSync.syncNow(Trigger.STARTUP)
         }
     }
 
-    private fun startTvPairing() {
-        val server = TvPairingServer(this) { creds ->
+    /**
+     * Opens the TV's PIN pairing. Milestone D: every pairing also links the phone for Play on TV; with [linkOnly] (from
+     * Linked phones, the TV already signed in) it only links and keeps the TV's own sign-in.
+     */
+    private fun startTvPairing(linkOnly: Boolean = false) {
+        val onPhoneLinked = { phone: DeviceLink ->
+            val phones = DeviceLinkStore.phones(this)
+            phones.save(phone)
+            PairingLink.answer(phones.selfId(), DeviceLinkStore.deviceName(this), PlayOnTvReceiver.port)
+        }
+        tvPairingLinkOnly.value = linkOnly
+        val server = TvPairingServer(this, linkOnly = linkOnly, onPhoneLinked = onPhoneLinked) { creds ->
             runOnUiThread {
                 credentialStore.saveCredentials(creds)
                 showTvPairingDialog.value = false
                 if (creds.rootFolderId.isNotEmpty()) {
-                    currentScreen.value = AppScreen.Home
+                    navigator.resetTo(Screen.Home)
                     triggerBackgroundSync(creds.refreshToken, creds.rootFolderId)
                 } else {
-                    currentScreen.value = AppScreen.FolderPicker
+                    navigator.resetTo(Screen.FolderPicker)
                     refreshTokenAndLoadFolders(creds.refreshToken)
                 }
             }
@@ -1139,9 +1289,12 @@ class MainActivity : ComponentActivity() {
                         tvPairingStatus.value = "Listening on Wi-Fi ($ip:$port)..."
                     }
                 },
-                onSuccess = { creds ->
+                onSuccess = {
                     runOnUiThread {
-                        Toast.makeText(this@MainActivity, "TV Paired Successfully!", Toast.LENGTH_SHORT).show()
+                        if (linkOnly) showTvPairingDialog.value = false
+                        refreshLinkedDevices()
+                        val text = if (linkOnly) "Phone linked. You can now use Play on TV from it." else "TV Paired Successfully!"
+                        Toast.makeText(this@MainActivity, text, Toast.LENGTH_SHORT).show()
                     }
                 },
                 onError = { err ->
@@ -1153,51 +1306,105 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** The player returns the next episode's catalog ID when "Next Episode" is pressed; play it like any other title. */
+    /**
+     * The player plays the next or previous episode itself (F-29); it hands the ID back only when that needs a choice
+     * or a message here (slow connection to the PC, or no copy available). Then play it like any other title. Its
+     * Details button comes back here too: the film's page, or the series' page for an episode, on top of where the
+     * player was opened from (Back then returns there).
+     */
     private val playerLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-        val data = result.data ?: return@registerForActivityResult
-        val nextId = data.getStringExtra(PlayerActivity.EXTRA_NEXT_EPISODE_ID) ?: return@registerForActivityResult
-        launchPlayer(nextId, data.getStringExtra(PlayerActivity.EXTRA_NEXT_EPISODE_TITLE) ?: "Next Episode")
+        // Milestone Q: share what was just watched.
+        runDeviceSync(Trigger.PLAYER_CLOSED)
+        when (val exit = PlayerExit.from(result.data)) {
+            is PlayerExit.PlayEpisode -> launchPlayer(exit.mediaItemId, exit.title ?: "Episode")
+            is PlayerExit.OpenDetails -> lifecycleScope.launch {
+                val item = withContext(Dispatchers.IO) { database.mediaDao().getMediaItemById(exit.mediaItemId) }
+                PlayerExit.detailsScreen(item)?.let { navigator.open(it) }
+            }
+            null -> Unit
+        }
     }
 
-    /** (catalog ID, label) of the episode after [mediaItemId], or null for films and last episodes. */
-    private suspend fun findNextEpisode(mediaItemId: String): Pair<String, String>? {
-        val dao = database.mediaDao()
-        val seriesId = dao.getMediaItemById(mediaItemId)?.seriesId ?: return null
-        val next = NextEpisode.after(dao.getEpisodesForSeries(seriesId), mediaItemId) ?: return null
-        val seriesTitle = dao.getSeriesById(seriesId)?.title.orEmpty()
-        return next.id to NextEpisode.label(seriesTitle, next)
-    }
+    /** (catalog ID, label) of the episodes before and after [mediaItemId]; null for films, first and last episodes. */
+    private data class EpisodeNeighbours(val previous: Pair<String, String>?, val next: Pair<String, String>?)
+
+    private suspend fun findEpisodeNeighbours(mediaItemId: String) = EpisodeNeighbours(
+        previous = PreviousEpisode.find(database.mediaDao(), mediaItemId),
+        next = NextEpisode.find(database.mediaDao(), mediaItemId)
+    )
 
     /** Plays a catalog title from its best available copy (local first, then Drive), resuming across copies. */
-    private fun launchPlayer(mediaItemId: String, title: String, startPosMs: Long = 0L) {
+    /** [forcePosition]: start at [startPosMs] even when this device has its own progress (Play on TV, Milestone D). */
+    private fun launchPlayer(mediaItemId: String, title: String, startPosMs: Long = 0L, forcePosition: Boolean = false) {
+        // Task M.0: Play pressed → first video frame; PlayerActivity ends it.
+        val firstFrame = Perf.begin("play.firstFrame")
         lifecycleScope.launch {
-            val resolved = withContext(Dispatchers.IO) { playbackResolver.resolve(mediaItemId, startPosMs) }
-            val next = withContext(Dispatchers.IO) { findNextEpisode(mediaItemId) }
+            val (resolved, neighbours) = Perf.measure("play.resolve") {
+                withContext(Dispatchers.IO) {
+                    val copy = playbackResolver.resolve(mediaItemId, startPosMs)
+                    (if (forcePosition) copy.withStartPosition(startPosMs) else copy) to findEpisodeNeighbours(mediaItemId)
+                }
+            }
+            if (resolved !is ResolvedPlayback.Playable) firstFrame.put("result", resolved.javaClass.simpleName).end()
             when (resolved) {
                 is ResolvedPlayback.Unavailable -> Toast.makeText(
                     this@MainActivity,
                     "'$title' isn't available right now — its local folder may be removed or disconnected.",
                     Toast.LENGTH_LONG
                 ).show()
-                is ResolvedPlayback.Playable -> {
-                    val intent = Intent(this@MainActivity, PlayerActivity::class.java).apply {
-                        when (val source = resolved.source) {
-                            is PlaybackSource.Local -> putExtra(PlayerActivity.EXTRA_LOCAL_CONTENT_URI, source.contentUri)
-                            is PlaybackSource.Drive -> putExtra(PlayerActivity.EXTRA_DRIVE_FILE_ID, source.fileId)
-                        }
-                        putExtra(PlayerActivity.EXTRA_TITLE, title)
-                        putExtra(PlayerActivity.EXTRA_START_POSITION_MS, resolved.resumePositionMs)
-                        putExtra(PlayerActivity.EXTRA_ACCESS_TOKEN, cachedAccessToken)
-                        if (next != null) {
-                            putExtra(PlayerActivity.EXTRA_NEXT_EPISODE_ID, next.first)
-                            putExtra(PlayerActivity.EXTRA_NEXT_EPISODE_TITLE, next.second)
+                is ResolvedPlayback.Playable -> startPlayer(resolved, mediaItemId, title, neighbours, firstFrame)
+                is ResolvedPlayback.SlowConnection -> {
+                    // Task I.2 (design §2.6): warn only when needed, and offer the Drive copy when there is one.
+                    val dialog = android.app.AlertDialog.Builder(this@MainActivity)
+                        .setTitle("Slow connection to the PC")
+                        .setMessage(resolved.verdict.message(hasDriveCopy = resolved.fallback != null))
+                        .setNeutralButton("Play from the PC anyway") { _, _ -> startPlayer(resolved.pc, mediaItemId, title, neighbours) }
+                        .setNegativeButton("Cancel", null)
+                    resolved.fallback?.let { fallback ->
+                        dialog.setPositiveButton(if (fallback.source is PlaybackSource.Drive) "Play from Drive" else "Play the other copy") { _, _ ->
+                            startPlayer(fallback, mediaItemId, title, neighbours)
                         }
                     }
-                    playerLauncher.launch(intent)
+                    dialog.show()
                 }
             }
         }
+    }
+
+    private fun startPlayer(
+        resolved: ResolvedPlayback.Playable,
+        mediaItemId: String,
+        title: String,
+        neighbours: EpisodeNeighbours,
+        firstFrame: PerfSpan? = null
+    ) {
+        val intent = Intent(this@MainActivity, PlayerActivity::class.java).apply {
+            if (firstFrame != null) {
+                putExtra(PlayerActivity.EXTRA_PERF_START_NANOS, firstFrame.startNanos)
+                putExtra(PlayerActivity.EXTRA_PERF_COOKIE, firstFrame.cookie)
+            }
+            when (val source = resolved.source) {
+                is PlaybackSource.Local -> putExtra(PlayerActivity.EXTRA_LOCAL_CONTENT_URI, source.contentUri)
+                is PlaybackSource.Drive -> putExtra(PlayerActivity.EXTRA_DRIVE_FILE_ID, source.fileId)
+                is PlaybackSource.Host -> {
+                    putExtra(PlayerActivity.EXTRA_HOST_SOURCE_KEY, source.sourceKey)
+                    putExtra(PlayerActivity.EXTRA_HOST_URL, source.url)
+                }
+            }
+            putExtra(PlayerActivity.EXTRA_MEDIA_ITEM_ID, mediaItemId)
+            putExtra(PlayerActivity.EXTRA_TITLE, title)
+            putExtra(PlayerActivity.EXTRA_START_POSITION_MS, resolved.resumePositionMs)
+            putExtra(PlayerActivity.EXTRA_ACCESS_TOKEN, cachedAccessToken)
+            neighbours.next?.let { next ->
+                putExtra(PlayerActivity.EXTRA_NEXT_EPISODE_ID, next.first)
+                putExtra(PlayerActivity.EXTRA_NEXT_EPISODE_TITLE, next.second)
+            }
+            neighbours.previous?.let { previous ->
+                putExtra(PlayerActivity.EXTRA_PREVIOUS_EPISODE_ID, previous.first)
+                putExtra(PlayerActivity.EXTRA_PREVIOUS_EPISODE_TITLE, previous.second)
+            }
+        }
+        playerLauncher.launch(intent)
     }
 
     private fun handleSignOut() {
@@ -1209,11 +1416,13 @@ class MainActivity : ComponentActivity() {
         }
         folderSwitchJob?.cancel()
         librarySyncJob?.cancel()
-        isSwitchingLibrary.value = false
+        setup.isSwitchingLibrary.value = false
         credentialStore.clear()
         cachedAccessToken = ""
+        // Milestone Q: the next sign-in is read-only; turning sync on again asks for the app folder.
+        deviceSync.disable()
         homeViewModel.updateAccount(AccountUiState(isConnected = false))
-        currentScreen.value = AppScreen.SignIn
+        navigator.resetTo(Screen.SignIn)
     }
 
     private fun fetchAndCacheUserIdentity(accessToken: String) {

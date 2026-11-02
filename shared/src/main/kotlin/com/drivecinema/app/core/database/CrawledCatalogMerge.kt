@@ -33,9 +33,21 @@ object CrawledCatalogMerge {
         }
     }
 
-    /** Crawl-owned columns come from [crawled]; enrichment columns are kept from [stored] when unchanged. */
-    fun mergeItem(crawled: MediaItemEntity, stored: MediaItemEntity?): MediaItemEntity {
-        if (stored == null || !isUnchanged(crawled, stored)) return crawled
+    /**
+     * A stored series whose folder name changed: it is matched again from scratch, and its episodes lose what the old
+     * match gave them (F-48).
+     */
+    fun isRenamed(crawled: SeriesEntity, stored: SeriesEntity?): Boolean =
+        stored != null && !sameParsedIdentity(crawled.title, crawled.year, stored.title, stored.year)
+
+    /**
+     * Crawl-owned columns come from [crawled]; enrichment columns are kept from [stored] when unchanged.
+     * @param keepEnrichment false for an episode whose series is matched again from scratch (renamed, or a new
+     *   matching version): it starts from its file name, so a title from the old show can't outlive the match
+     *   (F-48: Bleach's "A Shinigami's Work" stayed on Thousand-Year Blood War's E02).
+     */
+    fun mergeItem(crawled: MediaItemEntity, stored: MediaItemEntity?, keepEnrichment: Boolean = true): MediaItemEntity {
+        if (stored == null || !keepEnrichment || !isUnchanged(crawled, stored)) return crawled
         return crawled.copy(
             title = stored.title,
             year = stored.year,

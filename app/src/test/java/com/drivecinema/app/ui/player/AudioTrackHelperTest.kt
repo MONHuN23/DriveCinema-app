@@ -184,6 +184,56 @@ class AudioTrackHelperTest {
     }
 
     @Test
+    fun testAc3TrackHandledBySoftwareDecoderStaysSelectedWithAudio() {
+        // Milestone G: with the FFmpeg renderer, Media3 reports an AC-3 track as FORMAT_HANDLED even on a device
+        // without an AC-3 decoder. It must stay selected (no switch, no muting, no banner).
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val player = ExoPlayer.Builder(context).build()
+
+        val ac3Format = Format.Builder()
+            .setSampleMimeType(MimeTypes.AUDIO_AC3)
+            .setLanguage("en")
+            .setChannelCount(6)
+            .setSampleRate(48000)
+            .build()
+        val trackGroup = TrackGroup("audio", ac3Format)
+        val group = Tracks.Group(trackGroup, false, intArrayOf(C.FORMAT_HANDLED), booleanArrayOf(true))
+
+        val result = AudioTrackHelper.resolveAudioTracks(player, Tracks(listOf(group)))
+
+        assertTrue(result is AudioSelectionResult.SupportedTrackSelected)
+        val selected = (result as AudioSelectionResult.SupportedTrackSelected).track
+        assertEquals("AC-3 (Dolby Digital)", selected.codecDisplay)
+        assertEquals("English (AC-3 (Dolby Digital) • 5.1 Surround)", selected.label)
+        assertFalse(player.trackSelectionParameters.disabledTrackTypes.contains(C.TRACK_TYPE_AUDIO))
+        assertTrue(player.trackSelectionParameters.overrides.isEmpty())
+
+        player.release()
+    }
+
+    @Test
+    fun mkvTracksInSeparateGroupsHaveOnlyOnePlayingTrack() {
+        // P.8 regression: an MKV puts each audio track in its own group, so both tracks have trackIndex 0. The dialog
+        // compared that index with the playing track's and checked both Hungarian and English.
+        val tracks = Tracks(listOf(mkvAudioGroup("hu", 2, selected = false), mkvAudioGroup("en", 6, selected = true)))
+
+        val audio = AudioTrackHelper.extractAudioTracks(tracks)
+
+        assertEquals(listOf(0, 0), audio.map { it.trackIndex })
+        assertEquals(1, audio.count { it.isSelected })
+        assertEquals("en", AudioTrackHelper.playingTrack(audio)?.language)
+    }
+
+    @Test
+    fun noPlayingTrackWhenAudioIsOffOrUnsupported() {
+        val off = Tracks(listOf(mkvAudioGroup("hu", 2, selected = false), mkvAudioGroup("en", 6, selected = false)))
+        assertEquals(null, AudioTrackHelper.playingTrack(AudioTrackHelper.extractAudioTracks(off)))
+
+        val unsupported = Tracks(listOf(mkvAudioGroup("en", 6, selected = true, supported = false)))
+        assertEquals(null, AudioTrackHelper.playingTrack(AudioTrackHelper.extractAudioTracks(unsupported)))
+    }
+
+    @Test
     fun testExoPlayerPreservesExceedRendererCapabilities() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val trackSelector = DefaultTrackSelector(context).apply {
@@ -196,6 +246,15 @@ class AudioTrackHelperTest {
         System.err.println("DEBUG_EXO: player trackSelectionParameters = $playerTrackParams")
         player.release()
     }
+
+    private fun mkvAudioGroup(language: String, channels: Int, selected: Boolean, supported: Boolean = true): Tracks.Group {
+        val format = Format.Builder()
+            .setSampleMimeType(MimeTypes.AUDIO_AC3)
+            .setLanguage(language)
+            .setChannelCount(channels)
+            .setSampleRate(48000)
+            .build()
+        val support = if (supported) C.FORMAT_HANDLED else C.FORMAT_UNSUPPORTED_TYPE
+        return Tracks.Group(TrackGroup("audio-$language", format), false, intArrayOf(support), booleanArrayOf(selected))
+    }
 }
-
-

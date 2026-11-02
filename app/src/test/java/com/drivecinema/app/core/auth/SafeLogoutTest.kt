@@ -4,7 +4,7 @@ import android.content.Context
 import androidx.compose.runtime.mutableStateOf
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
-import com.drivecinema.app.AppScreen
+import com.drivecinema.app.ui.navigation.Screen
 import com.drivecinema.app.core.database.DriveCinemaDatabase
 import com.drivecinema.app.core.database.entity.MediaItemEntity
 import com.drivecinema.app.core.database.entity.MediaType
@@ -82,11 +82,11 @@ class SafeLogoutTest {
         // Invariant: The SQLite database MUST NOT be cleared or reset.
         // We simulate the exact logout sequence from MainActivity.handleSignOut()
         var cachedAccessToken = "active_oauth_token"
-        val currentScreen = mutableStateOf<AppScreen>(AppScreen.Home)
+        val currentScreen = mutableStateOf<Screen>(Screen.Home)
 
         // Session teardown
         cachedAccessToken = ""
-        currentScreen.value = AppScreen.SignIn
+        currentScreen.value = Screen.SignIn
 
         // 3. Verify SQLite data is 100% intact after logout
         val movieCountAfter = mediaDao.getAllMovies().size
@@ -102,13 +102,13 @@ class SafeLogoutTest {
 
     @Test
     fun testLogoutRedirectsToSignInScreen() {
-        val currentScreen = mutableStateOf<AppScreen>(AppScreen.Home)
-        assertTrue(currentScreen.value is AppScreen.Home)
+        val currentScreen = mutableStateOf<Screen>(Screen.Home)
+        assertTrue(currentScreen.value is Screen.Home)
 
         // Trigger sign-out transition
-        currentScreen.value = AppScreen.SignIn
+        currentScreen.value = Screen.SignIn
 
-        assertEquals(AppScreen.SignIn, currentScreen.value)
+        assertEquals(Screen.SignIn, currentScreen.value)
     }
 
     @Test

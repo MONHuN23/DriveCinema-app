@@ -57,11 +57,9 @@ class StartupSyncSwapTest {
                 if (url.encodedPath.endsWith("/changes/startPageToken")) {
                     return MockResponse().setResponseCode(200).setBody("""{"startPageToken":"tok_1"}""")
                 }
-                val folderId = Regex("""'([^']+)' in parents""").find(url.queryParameter("q").orEmpty())
-                    ?.groupValues?.get(1) ?: return MockResponse().setResponseCode(400)
-                httpErrors[folderId]?.let { return MockResponse().setResponseCode(it) }
-                val files = folderChildren[folderId] ?: emptyList()
-                return MockResponse().setResponseCode(200).setBody("""{"files":[${files.joinToString(",")}]}""")
+                val folderIds = FakeDriveListing.folderIds(url.queryParameter("q")).ifEmpty { return MockResponse().setResponseCode(400) }
+                folderIds.firstNotNullOfOrNull { httpErrors[it] }?.let { return MockResponse().setResponseCode(it) }
+                return MockResponse().setResponseCode(200).setBody(FakeDriveListing.body(folderIds) { folderChildren[it] ?: emptyList() })
             }
         }
         server.start()

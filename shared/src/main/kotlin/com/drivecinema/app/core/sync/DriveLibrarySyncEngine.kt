@@ -1,6 +1,7 @@
 package com.drivecinema.app.core.sync
 
 import com.drivecinema.app.core.logging.AppLog
+import com.drivecinema.app.core.logging.Perf
 import com.drivecinema.app.core.database.dao.MediaDao
 import com.drivecinema.app.core.database.dao.SyncMetadataDao
 import com.drivecinema.app.core.database.entity.SyncMetadataEntity
@@ -38,13 +39,41 @@ class DriveLibrarySyncEngine(
     private val syncMetadataDao: SyncMetadataDao,
     private val tmdbClient: com.drivecinema.app.core.metadata.TmdbClient? = null,
     private val httpClient: OkHttpClient = OkHttpClient(),
-    private val baseUrl: String = "https://www.googleapis.com/drive/v3"
+    private val baseUrl: String = "https://www.googleapis.com/drive/v3",
+    private val clock: () -> Long = System::currentTimeMillis
 ) {
     // Serialises catalog writes so a stale crawl can never interleave with a library switch.
     private val catalogWriteMutex = Mutex()
 
     companion object {
         const val SYNC_TOKEN_KEY = "DRIVE_CHANGES_PAGE_TOKEN"
+        private const val TAG = "DriveLibrarySyncEngine"
+
+        /**
+         * Why a crawl failed, for the log: the exception type and its message (e.g. "IOException: Failed to query
+         * folder … code 503"). A JSON error's message can quote Drive's answer, file names included, so it is left out.
+         */
+        internal fun describeFailure(e: Exception): String = when (e) {
+            is org.json.JSONException -> "JSONException (unreadable answer from Drive)"
+            else -> "${e.javaClass.simpleName}: ${e.message.orEmpty().take(200)}"
+        }
+
+        /** `sync_metadata` rows `TMDB_NO_MATCH|<title key>`, timestamp = when TMDB answered "no match" (Task N.2). */
+        const val TMDB_NO_MATCH_PREFIX = "TMDB_NO_MATCH|"
+
+        /** A "no match" is asked again after a week: TMDB may have added the title by then. */
+        const val TMDB_NO_MATCH_RETRY_MS = 7L * 24 * 60 * 60 * 1000
+
+        /** `sync_metadata` row whose token is the [SERIES_MATCHING_VERSION] the stored series matches were made with. */
+        const val SERIES_MATCHING_KEY = "TMDB_SERIES_MATCHING"
+
+        /**
+         * Raise it when the way series are matched changes: the next crawl matches every series again, from its file
+         * names, and forgets the series "no match" answers (F-48: the desktop kept an older build's "no match" for
+         * "One Piece Anime" for a week after F-43, and a series matched by older rules keeps them until it's renamed).
+         * 2: F-43 (anime, arcs, running numbers) and F-48 (bare TMDB entries).
+         */
+        const val SERIES_MATCHING_VERSION = "2"
 
         fun determineAction(change: DriveChange, parentScope: Set<String>): SyncAction {
             if (change.removed || change.trashed) {
@@ -78,32 +107,46 @@ class DriveLibrarySyncEngine(
         rootFolderId: String? = null
     ): Result<Unit> {
         return try {
-            val library = crawler.crawl(filmsFolderId, seriesFolderId, accessToken, rootFolderId)
-            catalogWriteMutex.withLock {
-                // A cancelled (superseded) crawl must not write its now-stale results.
-                currentCoroutineContext().ensureActive()
-                if (library.movies.isEmpty() && library.episodes.isEmpty()) {
-                    mediaDao.upsertCrawledSeries(library.series)
-                } else {
-                    mediaDao.replaceVisibleLibrary(library.movies, library.series, library.episodes, libraryRootId = rootFolderId)
+            val library = Perf.measure("sync.crawl") { span ->
+                crawler.crawl(filmsFolderId, seriesFolderId, accessToken, rootFolderId).also {
+                    span.put("requests", it.driveRequests).put("movies", it.movies.size)
+                        .put("series", it.series.size).put("episodes", it.episodes.size)
+                }
+            }
+            Perf.measure("sync.dbWrite") {
+                catalogWriteMutex.withLock {
+                    // A cancelled (superseded) crawl must not write its now-stale results.
+                    currentCoroutineContext().ensureActive()
+                    if (library.movies.isEmpty() && library.episodes.isEmpty()) {
+                        mediaDao.upsertCrawledSeries(library.series)
+                    } else {
+                        val rematchAll = tmdbClient != null &&
+                            syncMetadataDao.getMetadata(SERIES_MATCHING_KEY)?.syncToken != SERIES_MATCHING_VERSION
+                        mediaDao.replaceVisibleLibrary(
+                            library.movies, library.series, library.episodes, libraryRootId = rootFolderId,
+                            fileInfo = library.fileInfo, rematchAllSeries = rematchAll
+                        )
+                        if (rematchAll) {
+                            syncMetadataDao.deleteWithPrefixUpTo("${TMDB_NO_MATCH_PREFIX}series|", Long.MAX_VALUE)
+                            syncMetadataDao.setMetadata(
+                                SyncMetadataEntity(SERIES_MATCHING_KEY, syncToken = SERIES_MATCHING_VERSION, lastSyncTimestamp = clock())
+                            )
+                        }
+                    }
                 }
             }
 
             // Enrich all unenriched catalog items with TMDB metadata
             enrichExistingCatalog()
 
-            val startToken = fetchStartPageToken(accessToken)
-            syncMetadataDao.setMetadata(
-                SyncMetadataEntity(
-                    key = SYNC_TOKEN_KEY,
-                    syncToken = startToken,
-                    lastSyncTimestamp = System.currentTimeMillis()
-                )
-            )
+            // Task N.1: no `changes/startPageToken` request any more (one Drive request, ~0.4 s, per sync): only
+            // [syncIncrementalChanges] read the token, and nothing calls it.
             Result.success(Unit)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
+            // The callers only show "not refreshed": without this line a failed startup crawl left no trace (N.2 device check).
+            AppLog.w(TAG, "Library crawl failed, catalog left unchanged: ${describeFailure(e)}")
             Result.failure(e)
         }
     }
@@ -125,18 +168,12 @@ class DriveLibrarySyncEngine(
     ): Result<Int> {
         return try {
             val library = crawler.crawl(filmsFolderId, seriesFolderId, accessToken, rootFolderId)
-            val startToken = fetchStartPageToken(accessToken)
             catalogWriteMutex.withLock {
                 currentCoroutineContext().ensureActive()
                 withContext(NonCancellable) {
-                    mediaDao.replaceVisibleLibrary(library.movies, library.series, library.episodes, libraryRootId = rootFolderId)
-                    syncMetadataDao.setMetadata(
-                        SyncMetadataEntity(
-                            key = SYNC_TOKEN_KEY,
-                            syncToken = startToken,
-                            lastSyncTimestamp = System.currentTimeMillis()
-                        )
-                    )
+                    mediaDao.replaceVisibleLibrary(library.movies, library.series, library.episodes, libraryRootId = rootFolderId, fileInfo = library.fileInfo)
+                    // The previous library's Changes page token (never used since N.1) must not outlive the switch.
+                    syncMetadataDao.clearMetadata(SYNC_TOKEN_KEY)
                     onCommitted()
                 }
             }
@@ -149,16 +186,26 @@ class DriveLibrarySyncEngine(
     }
 
     /**
-     * Titles TMDB answered with "no match" in this session (key: id + title + year). They keep `tmdbId = NULL`,
-     * so without this every enrichment pass (app start, crawl, refresh) would search them again. A TMDB error is
-     * not remembered and is retried; a renamed title has a new key and is searched again.
+     * Titles TMDB answered with "no match" keep `tmdbId = NULL`, so without a memory every enrichment pass (app
+     * start, crawl, refresh) would search them again. The answer is kept in `sync_metadata` (key: id + title + year),
+     * so it survives app restarts (Task N.2, F-40), and expires after [TMDB_NO_MATCH_RETRY_MS]. A TMDB error is not
+     * remembered and is retried; a renamed title has a new key and is searched again.
      */
-    private val tmdbNoMatch = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private suspend fun rememberNoMatch(key: String) {
+        syncMetadataDao.setMetadata(SyncMetadataEntity(TMDB_NO_MATCH_PREFIX + key, syncToken = null, lastSyncTimestamp = clock()))
+    }
 
     suspend fun enrichExistingCatalog(): Result<Int> {
         val tmdb = tmdbClient ?: return Result.success(0)
+        val span = Perf.begin("sync.tmdb")
+        val requestsAtStart = tmdb.requestCount
+        var searched = 0
+        var enrichedCount = 0
         return try {
-            var enrichedCount = 0
+            syncMetadataDao.deleteWithPrefixUpTo(TMDB_NO_MATCH_PREFIX, clock() - TMDB_NO_MATCH_RETRY_MS)
+            val tmdbNoMatch = syncMetadataDao.getKeysWithPrefix(TMDB_NO_MATCH_PREFIX)
+                .mapTo(HashSet()) { it.removePrefix(TMDB_NO_MATCH_PREFIX) }
+            span.put("knownNoMatch", tmdbNoMatch.size)
 
             // 1. Enrich unenriched movies
             val unenrichedMovies = mediaDao.getUnenrichedMovies()
@@ -166,9 +213,10 @@ class DriveLibrarySyncEngine(
                 val noMatchKey = "movie|${movie.id}|${movie.title}|${movie.year}"
                 if (noMatchKey in tmdbNoMatch) continue
                 try {
+                    searched++
                     val searchRes = tmdb.searchMovie(movie.title, movie.year)
                     val meta = searchRes.getOrNull()
-                    if (searchRes.isSuccess && meta == null) tmdbNoMatch += noMatchKey
+                    if (searchRes.isSuccess && meta == null) rememberNoMatch(noMatchKey)
                     if (meta != null) {
                         val enrichedMovie = movie.copy(
                             tmdbId = meta.tmdbId,
@@ -197,16 +245,28 @@ class DriveLibrarySyncEngine(
                 val noMatchKey = "series|${series.id}|${series.title}"
                 if (noMatchKey in tmdbNoMatch) continue
                 try {
-                    val searchRes = tmdb.searchSeries(series.title, series.year)
-                    val meta = searchRes.getOrNull()
-                    if (searchRes.isSuccess && meta == null) tmdbNoMatch += noMatchKey
-                    if (meta != null) {
+                    searched++
+                    // "One Piece (Anime)": search "One Piece" among animated shows; the full title if that finds nothing.
+                    val searchRes = com.drivecinema.app.core.metadata.SeriesFolderSearch.find(tmdb, series.title, series.year)
+                    val found = searchRes.getOrNull()
+                    if (searchRes.isSuccess && found == null) rememberNoMatch(noMatchKey)
+                    if (found != null) {
+                        val meta = found.show
+                        val searchTitle = found.searchTitle
+                        val seriesEpisodes = mediaDao.getEpisodesForSeries(series.id)
+                        val numbered = seriesEpisodes.mapNotNull { ep ->
+                            val season = ep.seasonNumber ?: return@mapNotNull null
+                            val number = ep.episodeNumber ?: return@mapNotNull null
+                            season to number
+                        }
+                        val match = com.drivecinema.app.core.metadata.SeriesEpisodeMatcher(tmdb).match(meta.tmdbId, meta.title, searchTitle, numbered)
+
                         val enrichedSeries = series.copy(
                             tmdbId = meta.tmdbId,
                             year = series.year ?: meta.year,
-                            posterPath = meta.posterPath,
+                            posterPath = match.arc?.posterPath ?: meta.posterPath,
                             backdropPath = meta.backdropPath,
-                            overview = meta.overview,
+                            overview = match.arc?.overview ?: meta.overview,
                             genres = meta.genres.joinToString(", ").ifEmpty { null },
                             voteAverage = meta.voteAverage,
                             voteCount = meta.voteCount
@@ -214,26 +274,17 @@ class DriveLibrarySyncEngine(
                         mediaDao.insertSingleSeries(enrichedSeries)
                         enrichedCount++
 
-                        val seriesEpisodes = mediaDao.getEpisodesForSeries(series.id)
-                        val seasons = seriesEpisodes.mapNotNull { it.seasonNumber }.distinct()
-                        for (seasonNum in seasons) {
-                            val seasonRes = tmdb.getSeasonEpisodes(meta.tmdbId, seasonNum)
-                            val tmdbEps = seasonRes.getOrNull() ?: continue
-                            val tmdbMap = tmdbEps.associateBy { it.episodeNumber }
-
-                            val localSeasonEps = seriesEpisodes.filter { it.seasonNumber == seasonNum }
-                            for (ep in localSeasonEps) {
-                                val epNum = ep.episodeNumber ?: continue
-                                val tmdbEp = tmdbMap[epNum] ?: continue
-                                val enrichedEp = ep.copy(
-                                    title = tmdbEp.name.ifEmpty { ep.title },
-                                    overview = tmdbEp.overview ?: ep.overview,
-                                    backdropPath = tmdbEp.stillPath ?: ep.backdropPath,
-                                    voteAverage = tmdbEp.voteAverage ?: ep.voteAverage,
-                                    runtimeSeconds = tmdbEp.runtimeSeconds ?: ep.runtimeSeconds
-                                )
-                                mediaDao.insertMediaItem(enrichedEp)
-                            }
+                        for (ep in seriesEpisodes) {
+                            val tmdbEp = match.episodes[(ep.seasonNumber ?: continue) to (ep.episodeNumber ?: continue)]
+                                ?: continue
+                            val enrichedEp = ep.copy(
+                                title = tmdbEp.name.ifEmpty { ep.title },
+                                overview = tmdbEp.overview ?: ep.overview,
+                                backdropPath = tmdbEp.stillPath ?: ep.backdropPath,
+                                voteAverage = tmdbEp.voteAverage ?: ep.voteAverage,
+                                runtimeSeconds = tmdbEp.runtimeSeconds ?: ep.runtimeSeconds
+                            )
+                            mediaDao.insertMediaItem(enrichedEp)
                         }
                     }
                 } catch (e: CancellationException) {
@@ -245,9 +296,14 @@ class DriveLibrarySyncEngine(
 
             Result.success(enrichedCount)
         } catch (e: CancellationException) {
+            span.put("aborted", true)
             throw e
         } catch (e: Exception) {
+            span.put("aborted", true)
             Result.failure(e)
+        } finally {
+            span.put("requests", tmdb.requestCount - requestsAtStart).put("searched", searched).put("enriched", enrichedCount)
+            span.end()
         }
     }
 
@@ -360,26 +416,6 @@ class DriveLibrarySyncEngine(
             return Result.success(changesProcessed)
         } catch (e: Exception) {
             return Result.failure(e)
-        }
-    }
-
-    private fun fetchStartPageToken(accessToken: String): String {
-        val url = "$baseUrl/changes/startPageToken".toHttpUrl().newBuilder()
-            .addQueryParameter("supportsAllDrives", "true")
-            .build()
-
-        val request = Request.Builder()
-            .url(url)
-            .addHeader("Authorization", "Bearer $accessToken")
-            .get()
-            .build()
-
-        httpClient.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) {
-                throw IOException("Failed to get startPageToken: ${response.code}")
-            }
-            val body = response.body?.string() ?: ""
-            return JSONObject(body).getString("startPageToken")
         }
     }
 }

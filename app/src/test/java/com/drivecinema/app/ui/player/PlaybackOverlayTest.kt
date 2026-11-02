@@ -3,6 +3,7 @@ package com.drivecinema.app.ui.player
 import android.view.KeyEvent
 import androidx.compose.ui.input.key.NativeKeyEvent
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
@@ -180,7 +181,69 @@ class PlaybackOverlayTest {
         }
 
         composeTestRule.onNodeWithText("Video Finished").assertIsDisplayed()
-        composeTestRule.onNodeWithText("Return to Details").performClick()
+        // Without a catalog item there is no details page to open, so the card's button just goes back.
+        composeTestRule.onNodeWithText("Back").performClick()
         assertTrue(returnClicked)
+    }
+
+    /**
+     * Report 2026-10-26: on the TV, "Next episode" and "Return to Details" on the end card did nothing. The focused
+     * play/pause button leaves the screen when the video ends, so nothing had focus and OK reached no control.
+     * The end card now takes the focus: Next episode when there is one, else Details (Back without an item).
+     */
+    @Test
+    fun endCardTakesTheRemoteFocusSoOkPlaysTheNextEpisode() {
+        var nextClicked = 0
+        composeTestRule.setContent {
+            PlaybackOverlay(
+                title = "S01E01",
+                isPlaying = false,
+                currentPositionMs = 1_260_000L,
+                durationMs = 1_260_000L,
+                audioTracks = emptyList(),
+                nextEpisodeTitle = "S01E02",
+                isEnded = true,
+                onPlayPauseClick = {},
+                onSeekRelative = {},
+                onSeekTo = {},
+                onAudioTrackClick = {},
+                onNextEpisodeClick = { nextClicked++ },
+                onBackPressed = {}
+            )
+        }
+
+        val next = composeTestRule.onNodeWithTag("player_next_episode_button")
+        next.assertIsFocused()
+        next.performKeyPress(
+            androidx.compose.ui.input.key.KeyEvent(NativeKeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_CENTER))
+        )
+        assertEquals(1, nextClicked)
+    }
+
+    @Test
+    fun endCardWithoutANextEpisodeFocusesReturnToDetails() {
+        var returnClicked = 0
+        composeTestRule.setContent {
+            PlaybackOverlay(
+                title = "The Dark Knight",
+                isPlaying = false,
+                currentPositionMs = 9_000_000L,
+                durationMs = 9_000_000L,
+                audioTracks = emptyList(),
+                isEnded = true,
+                onPlayPauseClick = {},
+                onSeekRelative = {},
+                onSeekTo = {},
+                onAudioTrackClick = {},
+                onBackPressed = { returnClicked++ }
+            )
+        }
+
+        val back = composeTestRule.onNodeWithTag("player_return_to_details_button")
+        back.assertIsFocused()
+        back.performKeyPress(
+            androidx.compose.ui.input.key.KeyEvent(NativeKeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_CENTER))
+        )
+        assertEquals(1, returnClicked)
     }
 }

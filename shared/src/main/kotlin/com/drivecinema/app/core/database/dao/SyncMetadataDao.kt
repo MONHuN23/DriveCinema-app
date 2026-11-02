@@ -16,4 +16,12 @@ interface SyncMetadataDao {
 
     @Query("DELETE FROM sync_metadata WHERE key = :key")
     suspend fun clearMetadata(key: String)
+
+    /** Keys starting with [prefix] (plain comparison, so `_` and `%` in it are not wildcards). */
+    @Query("SELECT key FROM sync_metadata WHERE substr(key, 1, length(:prefix)) = :prefix")
+    suspend fun getKeysWithPrefix(prefix: String): List<String>
+
+    /** Removes the rows under [prefix] whose timestamp is at or before [timestamp]. */
+    @Query("DELETE FROM sync_metadata WHERE substr(key, 1, length(:prefix)) = :prefix AND lastSyncTimestamp <= :timestamp")
+    suspend fun deleteWithPrefixUpTo(prefix: String, timestamp: Long)
 }

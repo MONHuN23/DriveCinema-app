@@ -7,6 +7,9 @@ import androidx.test.core.app.ApplicationProvider
 import com.drivecinema.app.core.player.PlaybackProgressTracker
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import com.drivecinema.app.core.database.DriveCinemaDatabase
+import com.drivecinema.app.core.database.closeInstanceForTests
+import org.junit.After
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -21,6 +24,9 @@ import org.robolectric.annotation.SQLiteMode
 @Config(sdk = [34])
 @SQLiteMode(SQLiteMode.Mode.NATIVE)
 class PlayerActivityProgressLifecycleTest {
+
+    @After
+    fun closeDatabase() = DriveCinemaDatabase.closeInstanceForTests()
 
     private fun activeListener(activity: PlayerActivity): Any? {
         val trackerField = PlayerActivity::class.java.getDeclaredField("progressTracker").apply { isAccessible = true }

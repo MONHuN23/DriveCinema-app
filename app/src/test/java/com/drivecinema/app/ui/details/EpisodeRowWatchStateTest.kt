@@ -2,6 +2,7 @@ package com.drivecinema.app.ui.details
 
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import org.junit.Rule
 import org.junit.Test
@@ -18,7 +19,7 @@ class EpisodeRowWatchStateTest {
     val composeTestRule = createComposeRule()
 
     @Test
-    fun watchedEpisodeShowsWatchedLabel() {
+    fun watchedEpisodeShowsOneWatchedMarker() {
         composeTestRule.setContent {
             EpisodeRowItem(
                 episode = EpisodeItem(id = "e1", title = "Pilot", season = 1, episode = 1, isCompleted = true,
@@ -27,7 +28,9 @@ class EpisodeRowWatchStateTest {
                 onClick = {}
             )
         }
-        composeTestRule.onNodeWithText("✓ Watched").assertIsDisplayed()
+        // L.5: one marker (the check on the thumbnail), no "Watched" text line as well.
+        composeTestRule.onNodeWithContentDescription("Watched").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Watched").assertDoesNotExist()
     }
 
     @Test
@@ -52,7 +55,7 @@ class EpisodeRowWatchStateTest {
                 onClick = {}
             )
         }
-        composeTestRule.onNodeWithText("✓ Watched").assertDoesNotExist()
+        composeTestRule.onNodeWithContentDescription("Watched").assertDoesNotExist()
         composeTestRule.onNodeWithText("min left", substring = true).assertDoesNotExist()
     }
 }

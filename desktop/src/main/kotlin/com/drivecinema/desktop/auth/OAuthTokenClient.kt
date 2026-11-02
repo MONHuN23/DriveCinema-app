@@ -31,7 +31,8 @@ class OAuthException(val error: String, val description: String?, val httpStatus
 class OAuthTokenClient(
     private val config: DesktopOAuthConfig,
     private val httpClient: OkHttpClient = OkHttpClient(),
-    private val tokenEndpoint: String = GoogleOAuth.TOKEN_ENDPOINT
+    private val tokenEndpoint: String = GoogleOAuth.TOKEN_ENDPOINT,
+    private val revokeEndpoint: String = GoogleOAuth.REVOKE_ENDPOINT
 ) {
 
     fun exchangeCode(code: String, redirectUri: String, pkce: Pkce): OAuthTokens = post(
@@ -53,6 +54,21 @@ class OAuthTokenClient(
             .add("client_secret", config.clientSecret)
             .build()
     )
+
+    /**
+     * Revokes the whole grant behind [token] (refresh or access token): read and write access alike, so the user
+     * signs in again afterwards. A token Google no longer knows (`invalid_token`) counts as revoked.
+     */
+    fun revoke(token: String) {
+        val request = Request.Builder().url(revokeEndpoint).post(FormBody.Builder().add("token", token).build()).build()
+        httpClient.newCall(request).execute().use { response ->
+            if (response.isSuccessful) return
+            val json = runCatching { JSONObject(response.body?.string().orEmpty()) }.getOrNull()
+            val error = json?.optString("error")?.takeIf { it.isNotEmpty() } ?: "http_${response.code}"
+            if (error == "invalid_token") return
+            throw OAuthException(error, json?.optString("error_description")?.takeIf { it.isNotEmpty() }, response.code)
+        }
+    }
 
     private fun post(body: FormBody): OAuthTokens {
         val request = Request.Builder().url(tokenEndpoint).post(body).build()

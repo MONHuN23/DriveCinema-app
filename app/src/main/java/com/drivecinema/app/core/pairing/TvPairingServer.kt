@@ -3,6 +3,8 @@ package com.drivecinema.app.core.pairing
 import android.content.Context
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
+import com.drivecinema.app.core.remote.DeviceLink
+import com.drivecinema.app.core.remote.PairingLink
 import com.drivecinema.app.core.security.AuthCredentials
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -14,8 +16,15 @@ import java.net.ServerSocket
 import java.net.Socket
 import java.security.SecureRandom
 
+/**
+ * The TV's side of PIN pairing. Milestone D: with [onPhoneLinked] the phone may also link for Play on TV (the callback
+ * stores the phone's link and returns the TV's answer, `PairingLink.answer`); with [linkOnly] the TV is already signed
+ * in, takes only the link and ignores credentials.
+ */
 class TvPairingServer(
     private val context: Context,
+    private val linkOnly: Boolean = false,
+    private val onPhoneLinked: ((DeviceLink) -> String)? = null,
     private val onCredentialsReceived: (AuthCredentials) -> Unit
 ) {
     companion object {
@@ -72,7 +81,7 @@ class TvPairingServer(
     suspend fun startServer(
         pin: String,
         onListening: (Int) -> Unit = {},
-        onSuccess: (AuthCredentials) -> Unit,
+        onSuccess: (AuthCredentials?) -> Unit,
         onError: (String) -> Unit
     ) = withContext(Dispatchers.IO) {
         activePin = pin
@@ -118,7 +127,7 @@ class TvPairingServer(
     private fun handleClientHandshake(
         socket: Socket,
         pin: String,
-        onSuccess: (AuthCredentials) -> Unit,
+        onSuccess: (AuthCredentials?) -> Unit,
         onError: (String) -> Unit
     ): HandshakeResult {
         val crypto = SrpPairingServerCrypto(pin)
@@ -131,6 +140,8 @@ class TvPairingServer(
             val challengeJson = JSONObject().apply {
                 put("salt", Hex.toHexString(challenge.salt))
                 put("serverB", challenge.serverB.toString(16))
+                if (onPhoneLinked != null) put(PairingLink.CAN_LINK, 1)
+                if (linkOnly) put(PairingLink.MODE, PairingLink.MODE_LINK_ONLY)
             }
             writer.println(challengeJson.toString())
 
@@ -155,12 +166,19 @@ class TvPairingServer(
             val encryptedBytes = Hex.decode(encryptedPayloadHex)
 
             val decryptedJsonStr = SrpCryptoHelper.decryptPayload(sessionKey, encryptedBytes)
-            val creds = AuthCredentials.fromJson(decryptedJsonStr)
-                ?: throw IllegalStateException("Invalid credentials format in decrypted payload")
+            val offer = if (onPhoneLinked != null) PairingLink.parseOffer(JSONObject(decryptedJsonStr).optJSONObject(PairingLink.OFFER)) else null
+            val creds = if (linkOnly) {
+                if (offer == null) throw IllegalStateException("No link in a link-only pairing")
+                null
+            } else {
+                AuthCredentials.fromJson(decryptedJsonStr) ?: throw IllegalStateException("Invalid credentials format in decrypted payload")
+            }
 
-            // 6. Notify receiver and confirm to client
-            onCredentialsReceived(creds)
+            // 6. Notify receiver and confirm to client; a linking phone then gets the TV's answer, sealed like the payload.
+            val answer = offer?.let { onPhoneLinked?.invoke(it) }
+            creds?.let(onCredentialsReceived)
             writer.println("OK")
+            answer?.let { writer.println(Hex.toHexString(SrpCryptoHelper.encryptPayload(sessionKey, it))) }
 
             onSuccess(creds)
             return HandshakeResult.PAIRED

@@ -3,6 +3,8 @@ package com.drivecinema.app.core.pairing
 import android.content.Context
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
+import com.drivecinema.app.core.remote.DeviceLink
+import com.drivecinema.app.core.remote.PairingLink
 import com.drivecinema.app.core.security.AuthCredentials
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -28,12 +30,18 @@ class TvUnreachableException(cause: Throwable) :
 class PhonePairingClient(
     private val context: Context
 ) {
+    /**
+     * Pairs with the TV at [host]:[port]. With [link] (this phone's ID, name and a new key) the phone also links for
+     * Play on TV (Milestone D); the result is then the TV's link, or null when the TV is too old to link. A TV in
+     * link-only mode (already signed in) gets no credentials.
+     */
     suspend fun pairWithTv(
         host: String,
         port: Int,
         pin: String,
-        credentials: AuthCredentials
-    ): Result<Unit> = withContext(Dispatchers.IO) {
+        credentials: AuthCredentials,
+        link: DeviceLink? = null
+    ): Result<DeviceLink?> = withContext(Dispatchers.IO) {
         val socket = Socket()
         try {
             try {
@@ -53,6 +61,9 @@ class PhonePairingClient(
             val challengeJson = JSONObject(challengeStr)
             val salt = Hex.decode(challengeJson.getString("salt"))
             val serverB = BigInteger(challengeJson.getString("serverB"), 16)
+            val canLink = challengeJson.has(PairingLink.CAN_LINK) && link != null
+            val linkOnly = challengeJson.optString(PairingLink.MODE) == PairingLink.MODE_LINK_ONLY
+            if (linkOnly && !canLink) return@withContext Result.failure(IllegalStateException("This TV only links phones for Play on TV"))
 
             // 2. Compute client public values A and M1
             val crypto = SrpPairingClientCrypto(pin)
@@ -77,15 +88,21 @@ class PhonePairingClient(
             // 4. Derive AES-GCM session key
             val sessionKey = crypto.deriveAesKey(salt)
 
-            // 5. Encrypt credentials payload and send
-            val payload = credentials.toJson()
+            // 5. Encrypt credentials payload (and the link offer) and send
+            val payload = (if (linkOnly) JSONObject() else JSONObject(credentials.toJson()))
+                .apply { if (canLink) put(PairingLink.OFFER, PairingLink.offer(link!!)) }
+                .toString()
             val encryptedBytes = SrpCryptoHelper.encryptPayload(sessionKey, payload)
             writer.println(Hex.toHexString(encryptedBytes))
 
             // 6. Read confirmation
             val confirmation = readReply(reader, "No confirmation from TV")
             if (confirmation == "OK") {
-                Result.success(Unit)
+                if (!canLink) return@withContext Result.success(null)
+                // 7. The TV's link answer, sealed with the same session key.
+                val answer = SrpCryptoHelper.decryptPayload(sessionKey, Hex.decode(readReply(reader, "No link from TV")))
+                PairingLink.parseAnswer(answer, link!!.key, host)?.let { Result.success(it) }
+                    ?: Result.failure(IllegalStateException("The TV sent an unreadable link"))
             } else {
                 Result.failure(IllegalStateException("Pairing failed on TV: $confirmation"))
             }

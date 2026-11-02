@@ -17,27 +17,35 @@ apps talk directly to Google Drive (read-only) and to TMDB for artwork.
 - **Next Episode** button (and the remote's Next key).
 - **Android TV**: remote-friendly 10-foot UI. Sign in on the TV by **pairing with your phone** (PIN, local network
   only), no typing.
-- Audio track choice; a clear warning when a device can't decode a video or audio format.
-- **Desktop app** for Linux (`.deb`) and Windows (`.msi` installer, no admin rights needed).
-- Desktop: local folders as an extra source, merged with the Drive library (phone storage folders: experimental).
-- Read-only: DriveCinema never changes, moves or uploads your files (the planned download-folder upload will be
-  opt-in).
+- Audio track choice; Dolby (AC-3, E-AC-3), DTS and TrueHD sound on phones and TVs without their own decoder (e.g.
+  Pixel), through a built-in software decoder; a clear warning when a device can't decode a video or audio format.
+- **Subtitles inside the video** (e.g. the tracks of an MKV file): pick one or turn them off in the player, on the
+  phone, TV and desktop.
+- **Skip Intro** button on episodes whose intro times are known (from SkipDB / IntroDB); can be turned off.
+- **Desktop app** for Linux (`.deb` for Debian/Ubuntu, `.rpm` for Fedora) and Windows (`.msi` installer, no admin
+  rights needed).
+- **Sync with my devices** (optional): watch progress and watched marks follow you between your phone, TV and
+  desktop, through a private app folder in your own Drive.
+- **Play on TV:** pick a film or episode on the phone and it starts on the paired TV.
+- **Naming helper and Naming check:** shows how to name a film or series folder so it gets the right poster, and
+  lists the folders in your library that won't match.
+- Local folders as an extra source, merged with the Drive library: on desktop, and on the phone. TVs only if their
+  firmware has Android's system folder picker.
+- **Stream from your PC:** phones, TVs and other computers at home play the videos in a desktop's local folders over
+  the home network, without uploading them to Drive (pair each device once with a code; away from home only through
+  a VPN such as Tailscale).
+- **Import to Drive (desktop, optional):** new videos in local folders you choose are uploaded to the right Drive
+  folder (Films / Series / Season) once they have finished downloading or copying.
+- Otherwise read-only: DriveCinema never changes, moves or deletes your files. Only the desktop's Import to Drive
+  uploads, and only when you turn it on.
 
-**Not yet:** subtitles (planned, see below), and watch progress is not synced between devices (each device keeps
-its own).
+**Not yet:** subtitles in separate files (`.srt` / `.vtt` next to the video on Drive).
 
 ## Coming next
 
 Planned, not built yet, in no fixed order:
 
-- **Subtitles:** `.srt` / `.vtt` files next to the video, plus subtitle tracks inside MKV files.
-- **Sound for Dolby / DTS on phones:** a software audio decoder for AC-3, E-AC-3 and DTS tracks that some phones
-  (e.g. Pixel) can't play today. Today such films play muted with a warning, or with another audio track.
-- **Play from phone to TV:** pick a film on the phone and it starts on the paired TV, at the same position.
-- **Desktop download folders → Google Drive:** finished downloads in folders you choose on the computer are
-  uploaded to the right Drive folder (Films / Series / Season) automatically.
-- **Stream from the desktop's local folders:** phones and TVs at home play videos stored on your computer directly
-  over Wi-Fi, without uploading them to Drive first.
+- **Subtitle files:** `.srt` / `.vtt` files next to the video.
 
 ## 1. Prepare your Google Drive
 
@@ -60,14 +68,19 @@ Streaming/
 
 - Films: `Title (Year).mkv`. The year is what makes the poster match.
 - Episodes: anything with `S01E02` in the name.
-- The apps contain the full **Setup guide** (folder layout, naming, formats, sharing a library with someone). More
+- The apps contain the full guide as a **Help Center** (folder layout, naming, formats, sharing a library with someone). More
   detail: [`DOWNLOAD_GUIDE.md`](DOWNLOAD_GUIDE.md).
 
 ## 2. Google sign-in
 
 DriveCinema reads Drive with Google's `drive.readonly` permission. Google treats that as a **restricted** scope, so
 the app isn't verified by Google, and you'll see a **"Google hasn't verified this app"** screen when you sign in:
-choose **Advanced → Go to DriveCinema** to continue. DriveCinema only ever reads your Drive.
+choose **Advanced → Go to DriveCinema** to continue. The phone and TV only ever read your Drive.
+
+The desktop's optional **Import to Drive** (uploads new videos from local folders) asks for one more permission, the
+full `drive` scope, and only when you turn it on. It is used to create show/season folders and upload new files; it
+never changes, moves or deletes anything already on Drive or on your computer. **Remove write access** on the import
+screen takes it back (you then sign in again).
 
 - **Ready-made downloads** (APK, `.deb`, `.msi`) use the developer's Google project. It is unverified, so Google allows
   **at most 100 users in total** on it. If sign-in says the limit is reached, build DriveCinema with your own keys
@@ -81,13 +94,13 @@ choose **Advanced → Go to DriveCinema** to continue. DriveCinema only ever rea
 3. Open DriveCinema → **Sign in with Google** → it finds your `Streaming` folder.
 
 ### Android TV / Google TV
-> **"Sign in with Google" on the TV doesn't work yet.** Use **Pair with Phone**: sign in on the phone first,
-> then pair the TV with it.
+> **On the TV you sign in with Pair with Phone.** Google's own sign-in isn't available on TVs (Google refuses it
+> for this app), so sign in on the phone first, then pair the TV with it.
 
 - Install the same APK, e.g. with the *Downloader* app, or from a computer:
   `adb connect <tv-ip>:<port>` then `adb install DriveCinema-<version>.apk`.
-- On the TV choose **Pair with Phone** and enter the PIN shown on the TV in the phone app (Account → Pair TV). Both
-  must be on the same Wi-Fi.
+- On the TV choose **Pair with Phone** and enter the PIN shown on the TV in the phone app (the **cast** button at the
+  top of Home). Both must be on the same Wi-Fi.
 
 ### Linux desktop (Debian/Ubuntu)
 ```bash
@@ -97,6 +110,16 @@ sudo apt install vlc
 sudo apt install ./drivecinema_<version>_amd64.deb
 ```
 VLC is required for playback. If it's missing, the app offers to install it.
+
+### Linux desktop (Fedora)
+VLC comes from [RPM Fusion](https://rpmfusion.org/Configuration) (enable it first), then:
+```bash
+sudo dnf install vlc
+```
+```bash
+sudo dnf install ./DriveCinema-<version>-x86_64.rpm
+```
+Uninstall with `sudo dnf remove drivecinema`.
 
 ### Windows 10 / 11 (64-bit)
 1. Download `DriveCinema-<version>.msi` from the [Releases](../../releases) page.
@@ -124,7 +147,9 @@ Building it yourself means using your own Google project and TMDB key, with no s
    - **Branding:** app name `DriveCinema`, your email as support and developer contact.
    - **Audience:** user type **External**, then **Publish app** (status **In production**). In *Testing* mode you
      have to sign in again every 7 days.
-   - **Data access → Add or remove scopes:** add `https://www.googleapis.com/auth/drive.readonly`.
+   - **Data access → Add or remove scopes:** add `https://www.googleapis.com/auth/drive.readonly`. For the desktop's
+     optional **Import to Drive**, also add `https://www.googleapis.com/auth/drive`. Leave the justification fields
+     empty; they are only for Google's verification.
    - You don't need Google's verification for yourself: you'll see "Google hasn't verified this app" once →
      **Advanced → Go to DriveCinema**.
 4. **Clients → Create client**, twice:
@@ -189,7 +214,8 @@ The TV can also sign in without its own Google sign-in: choose **Pair with Phone
 ## Privacy
 
 - No DriveCinema server, no analytics, no ads.
-- Your Google sign-in token stays on the device (Android Keystore; desktop: system keyring).
+- Your Google sign-in token stays on your devices (Android Keystore; desktop: system keyring). Pairing a TV sends it
+  to the TV over your local network, encrypted.
 - Requests go only to Google (sign-in, Drive) and TMDB (titles and years of your files, to find artwork).
 - Full privacy policy: [`PRIVACY.md`](PRIVACY.md).
 

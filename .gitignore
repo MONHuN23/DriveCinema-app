@@ -17,3 +17,6 @@ output-metadata.json
 # Release signing keys: never commit them
 *.jks
 *.keystore
+
+# Graphify output: rebuilt per machine with `graphify update .` (not committed)
+graphify-out/

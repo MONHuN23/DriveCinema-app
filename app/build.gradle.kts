@@ -13,8 +13,8 @@ android {
         applicationId = "com.drivecinema.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.3.0"
         manifestPlaceholders["appAuthRedirectScheme"] = "com.drivecinema.app"
 
         val localProps = Properties()
@@ -138,6 +138,8 @@ dependencies {
   implementation(libs.media3.exoplayer)
   implementation(libs.media3.datasource.okhttp)
   implementation(libs.media3.ui)
+  // Software AC-3 / E-AC-3 / DTS / TrueHD decoding where the device has no decoder (Milestone G, GPL-3.0)
+  implementation(libs.media3.ffmpeg.decoder)
 
   // AppAuth & OkHttp
   implementation(libs.appauth)

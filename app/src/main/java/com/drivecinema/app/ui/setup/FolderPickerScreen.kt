@@ -1,5 +1,7 @@
 package com.drivecinema.app.ui.setup
 
+import com.drivecinema.app.ui.icons.AppIcons
+import androidx.compose.material3.Icon
 import com.drivecinema.app.core.model.FolderPickerSections
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -44,6 +46,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.drivecinema.app.core.model.DriveFolder
+import com.drivecinema.app.theme.DcTheme
 
 @Composable
 fun FolderPickerScreen(
@@ -61,6 +64,24 @@ fun FolderPickerScreen(
     onOpenGuideClick: (() -> Unit)? = null
 ) {
     val sections = remember(folders) { FolderPickerSections.from(folders) }
+    if (!DcTheme.formFactor.isTv) {
+        PhoneFolderPicker(
+            sections = sections,
+            isLoading = isLoading,
+            isValidating = isValidating,
+            errorMessage = errorMessage,
+            currentFolderId = currentFolderId,
+            busyMessage = busyMessage,
+            onFolderSelected = onFolderSelected,
+            onRefreshClick = onRefreshClick,
+            onSignOutClick = onSignOutClick,
+            onCancelClick = onCancelClick,
+            onOpenGuideClick = onOpenGuideClick,
+            modifier = modifier
+        )
+        return
+    }
+    // The TV keeps its own layout: the remote starts on the first folder, with the actions in a row above the list.
     val firstItemFocusRequester = remember { FocusRequester() }
     val firstFolderId = (sections.mine + sections.shared).firstOrNull()?.id
 
@@ -110,7 +131,7 @@ fun FolderPickerScreen(
                 if (onOpenGuideClick != null) {
                     FolderActionButton(text = "? Setup guide", onClick = onOpenGuideClick)
                 }
-                FolderActionButton(text = "↻ Refresh", onClick = onRefreshClick)
+                FolderActionButton(text = "Refresh", onClick = onRefreshClick)
                 if (onCancelClick != null) {
                     FolderActionButton(text = "Cancel", onClick = onCancelClick)
                 }
@@ -191,7 +212,7 @@ fun FolderPickerScreen(
                             )
                             Spacer(modifier = Modifier.height(20.dp))
                             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                FolderActionButton(text = "↻ Refresh Folders", onClick = onRefreshClick)
+                                FolderActionButton(text = "Refresh Folders", onClick = onRefreshClick)
                                 if (onOpenGuideClick != null) {
                                     FolderActionButton(text = "How to set up folders", onClick = onOpenGuideClick)
                                 }
@@ -293,7 +314,12 @@ private fun FolderItemRow(
                 .background(if (folder.ownedByMe) Color(0x334D88FF) else Color(0x33A142F4)),
             contentAlignment = Alignment.Center
         ) {
-            Text(text = if (folder.ownedByMe) "📁" else "👥", fontSize = 20.sp)
+            Icon(
+                if (folder.ownedByMe) AppIcons.Folder else AppIcons.Group,
+                contentDescription = if (folder.ownedByMe) "Your folder" else "Shared folder",
+                tint = if (folder.ownedByMe) Color(0xFF8AB4F8) else Color(0xFFC58AF9),
+                modifier = Modifier.size(24.dp)
+            )
         }
         Spacer(modifier = Modifier.width(14.dp))
         Column(modifier = Modifier.weight(1f)) {
@@ -323,7 +349,7 @@ private fun FolderItemRow(
         }
         Spacer(modifier = Modifier.width(12.dp))
         Text(
-            text = if (isCurrent) "✓ Current" else "Select →",
+            text = if (isCurrent) "Current" else "Select →",
             color = when {
                 isFocused -> Color(0xFF4D88FF)
                 isCurrent -> Color(0xFF81C995)

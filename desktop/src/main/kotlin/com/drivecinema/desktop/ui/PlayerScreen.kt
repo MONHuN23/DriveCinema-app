@@ -1,13 +1,18 @@
 package com.drivecinema.desktop.ui
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.hoverable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -16,31 +21,34 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
@@ -54,18 +62,27 @@ import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.PointerIcon
 import androidx.compose.ui.input.pointer.onPointerEvent
 import androidx.compose.ui.input.pointer.pointerHoverIcon
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.drivecinema.app.ui.player.PlaybackTimeUtils
 import com.drivecinema.desktop.auth.BrowserLauncher
+import com.drivecinema.desktop.player.PlayedTech
 import com.drivecinema.desktop.player.PlayerEvent
 import com.drivecinema.desktop.player.VlcAvailability
 import com.drivecinema.desktop.player.VlcInstaller
 import com.drivecinema.desktop.player.VlcPlayer
+import com.drivecinema.desktop.player.AudioTrackOption
+import com.drivecinema.desktop.player.VlcTracks
+import com.drivecinema.app.core.skipintro.IntroTimes
+import com.drivecinema.app.core.skipintro.SkipIntroWindow
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -73,6 +90,11 @@ import kotlinx.coroutines.withContext
 import java.awt.Point
 import java.awt.Toolkit
 import java.awt.image.BufferedImage
+import kotlin.math.roundToInt
+import androidx.compose.foundation.layout.widthIn
+import com.drivecinema.app.core.player.TrackLabels
+import com.drivecinema.app.ui.design.DcTokens
+import com.drivecinema.desktop.ui.design.DesktopChoiceRow
 
 /** What the player screen needs: the stream URL and where to start, or why it can't play. */
 sealed interface PlaybackRequest {
@@ -81,6 +103,8 @@ sealed interface PlaybackRequest {
     data class Unavailable(val message: String) : PlaybackRequest
     /** libVLC isn't installed: offer to install it (audit F-17). */
     data object VlcMissing : PlaybackRequest
+    /** Task I.2: the connection to the PC is too slow for this film; the user chooses. */
+    data class SlowConnection(val message: String, val hasFallback: Boolean) : PlaybackRequest
 }
 
 private const val CONTROLS_HIDE_DELAY_MS = 3_000L
@@ -108,7 +132,16 @@ fun PlayerScreen(
     onBack: () -> Unit,
     nextEpisodeTitle: String? = null,
     onNextEpisode: () -> Unit = {},
-    onRetry: () -> Unit = {}
+    onRetry: () -> Unit = {},
+    /** Task I.2: answer to [PlaybackRequest.SlowConnection]: true = play from the PC anyway, false = the other copy. */
+    onSlowChoice: (playFromPc: Boolean) -> Unit = {},
+    /** Task L.3: codecs and resolution of the playing copy, once VLC knows them. */
+    onTechInfo: (PlayedTech) -> Unit = {},
+    /**
+     * Milestone O: finds the intro for this copy once VLC knows its length; null when the setting is off (then
+     * nothing is asked). Playback never waits for it.
+     */
+    findIntro: (suspend (lengthMs: Long) -> IntroTimes?)? = null
 ) {
     when (request) {
         PlaybackRequest.Loading -> {
@@ -123,6 +156,24 @@ fun PlayerScreen(
         }
         PlaybackRequest.VlcMissing -> {
             VlcMissingMessage(title, onRetry, onBack)
+            return
+        }
+        is PlaybackRequest.SlowConnection -> {
+            Box(Modifier.fillMaxSize().background(Color.Black), contentAlignment = Alignment.Center) {
+                Overlay(Modifier) {
+                    Text(title, color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.height(8.dp))
+                    Text("Slow connection to the PC", color = DesktopColors.TextPrimary, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                    Spacer(Modifier.height(6.dp))
+                    Text(request.message, color = DesktopColors.TextSecondary, fontSize = 13.sp, lineHeight = 19.sp)
+                    Spacer(Modifier.height(16.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        if (request.hasFallback) ControlButton("Play from Drive", { onSlowChoice(false) }, primary = true)
+                        ControlButton("Play from the PC anyway", { onSlowChoice(true) })
+                        ControlButton("Back", onBack)
+                    }
+                }
+            }
             return
         }
         is PlaybackRequest.Ready -> Unit
@@ -149,6 +200,7 @@ fun PlayerScreen(
                 PlayerEvent.FINISHED -> onFinished(player.durationMs.longValue)
             }
         }
+        player.onTechInfo = onTechInfo
         player.open(request.url, request.startMs)
         onDispose {
             if (!player.hasEnded.value) onProgress(player.positionMs.longValue, player.durationMs.longValue)
@@ -163,6 +215,13 @@ fun PlayerScreen(
             player.seekTo(0)
         }
     }
+
+    var intro by remember { mutableStateOf<IntroTimes?>(null) }
+    LaunchedEffect(duration > 0) {
+        if (duration > 0 && findIntro != null) intro = runCatching { findIntro(duration) }.getOrNull()
+    }
+    val skipIntroVisible = intro?.let { SkipIntroWindow.isVisible(it, position) } == true && !ended && error == null
+    val skipIntro = { intro?.let { player.seekTo(SkipIntroWindow.seekTarget(it)) } }
 
     // Save progress regularly while playing.
     LaunchedEffect(isPlaying) {
@@ -205,6 +264,7 @@ fun PlayerScreen(
                     Key.M -> { player.toggleMute(); true }
                     Key.F -> { onToggleFullscreen(); true }
                     Key.N -> if (nextEpisodeTitle != null) { onNextEpisode(); true } else false
+                    Key.S -> if (skipIntroVisible) { skipIntro(); true } else false
                     else -> false
                 }
             }
@@ -241,14 +301,36 @@ fun PlayerScreen(
                 Text("Finished", color = DesktopColors.TextPrimary, fontSize = 20.sp, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(16.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    OutlinedButton(onClick = { player.open(request.url, 0) }) { Text("Watch again", color = DesktopColors.TextPrimary) }
+                    OutlinedButton(onClick = { player.open(request.url, 0) }) {
+                        ButtonLabel(DesktopIcons.Replay, "Watch again", color = DesktopColors.TextPrimary)
+                    }
                     if (nextEpisodeTitle != null) {
-                        Button(onClick = onNextEpisode, colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.Accent)) { Text("Next episode  ⏭") }
+                        Button(onClick = onNextEpisode, colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.Accent)) {
+                            ButtonLabel(DesktopIcons.SkipNext, "Next episode", bold = true)
+                        }
                     } else {
                         Button(onClick = onBack, colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.Accent)) { Text("Back") }
                     }
                 }
             }
+        }
+
+        // Paused (not before the first frame, not at the end): a big play button in the middle, like the TV.
+        AnimatedVisibility(
+            !isPlaying && !buffering && !ended && error == null && duration > 0,
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = Modifier.align(Alignment.Center)
+        ) {
+            IconActionButton(
+                DesktopIcons.PlayArrow,
+                tooltipText("Play", "Space"),
+                onClick = { poke(); player.togglePause() },
+                size = 84.dp,
+                iconSize = 48.dp,
+                background = Color(0x99000000),
+                hoverBackground = DesktopColors.Accent
+            )
         }
 
         AnimatedVisibility(controlsVisible, enter = fadeIn(), exit = fadeOut(), modifier = Modifier.align(Alignment.TopCenter)) {
@@ -257,10 +339,10 @@ fun PlayerScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(Brush.verticalGradient(listOf(Color(0xCC000000), Color.Transparent)))
-                    .padding(horizontal = 24.dp, vertical = 20.dp)
+                    .padding(start = 16.dp, end = 24.dp, top = 14.dp, bottom = 32.dp)
             ) {
-                ControlButton("←  Back", onBack)
-                Spacer(Modifier.width(16.dp))
+                IconActionButton(DesktopIcons.ArrowBack, tooltipText("Back", "Esc"), onBack)
+                Spacer(Modifier.width(12.dp))
                 Text(title, color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
@@ -269,49 +351,111 @@ fun PlayerScreen(
             Column(
                 Modifier
                     .fillMaxWidth()
-                    .background(Brush.verticalGradient(listOf(Color.Transparent, Color(0xDD000000))))
-                    .padding(horizontal = 24.dp, vertical = 16.dp)
+                    .background(Brush.verticalGradient(listOf(Color.Transparent, Color(0xE6000000))))
+                    .padding(start = 16.dp, end = 16.dp, top = 48.dp, bottom = 12.dp)
             ) {
                 val shownPosition = draggingTo?.let { (it * duration).toLong() } ?: position
-                Slider(
-                    value = draggingTo ?: if (duration > 0) (position.toFloat() / duration).coerceIn(0f, 1f) else 0f,
-                    onValueChange = { draggingTo = it; poke() },
-                    onValueChangeFinished = {
+                ThinSlider(
+                    fraction = draggingTo ?: if (duration > 0) position.toFloat() / duration else 0f,
+                    onChange = { draggingTo = it; poke() },
+                    onChangeFinished = {
                         draggingTo?.let { player.seekTo((it * duration).toLong()) }
                         draggingTo = null
                     },
                     enabled = duration > 0,
-                    colors = SliderDefaults.colors(
-                        thumbColor = DesktopColors.Accent,
-                        activeTrackColor = DesktopColors.Accent,
-                        inactiveTrackColor = Color(0x55FFFFFF)
-                    ),
-                    modifier = Modifier.fillMaxWidth().pointerHoverIcon(PointerIcon.Hand)
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp)
                 )
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    ControlButton("⏪ 10", { player.seekBy(-SEEK_STEP_MS) })
-                    ControlButton(if (isPlaying) "⏸  Pause" else "▶  Play", { player.togglePause() }, primary = true)
-                    ControlButton("10 ⏩", { player.seekBy(SEEK_STEP_MS) })
-                    if (nextEpisodeTitle != null) ControlButton("Next episode  ⏭", onNextEpisode)
-                    Spacer(Modifier.width(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    IconActionButton(
+                        if (isPlaying) DesktopIcons.Pause else DesktopIcons.PlayArrow,
+                        tooltipText(if (isPlaying) "Pause" else "Play", "Space"),
+                        { player.togglePause() },
+                        size = 48.dp,
+                        iconSize = 32.dp
+                    )
+                    val back = tooltipText("Back 10 seconds", "←")
+                    IconActionButton(DesktopIcons.Replay, back, { player.seekBy(-SEEK_STEP_MS) }) {
+                        SeekIcon(forward = false, seconds = (SEEK_STEP_MS / 1000).toInt(), contentDescription = back)
+                    }
+                    val forward = tooltipText("Forward 10 seconds", "→")
+                    IconActionButton(DesktopIcons.Replay, forward, { player.seekBy(SEEK_STEP_MS) }) {
+                        SeekIcon(forward = true, seconds = (SEEK_STEP_MS / 1000).toInt(), contentDescription = forward)
+                    }
+                    VolumeControl(player)
+                    Spacer(Modifier.width(12.dp))
                     Text(
                         "${PlaybackTimeUtils.formatTime(shownPosition)} / ${PlaybackTimeUtils.formatTime(duration)}",
-                        color = Color.White,
+                        color = Color(0xE6FFFFFF),
                         fontSize = 14.sp
                     )
                     Spacer(Modifier.weight(1f))
-                    VolumeControl(player)
+                    if (nextEpisodeTitle != null) NextEpisodeButton(nextEpisodeTitle, onNextEpisode)
+                    SubtitleMenu(player)
                     AudioTrackMenu(player)
-                    ControlButton(if (isFullscreen) "⤡  Exit full screen" else "⤢  Full screen", onToggleFullscreen)
+                    IconActionButton(
+                        if (isFullscreen) DesktopIcons.FullscreenExit else DesktopIcons.Fullscreen,
+                        tooltipText(if (isFullscreen) "Exit full screen" else "Full screen", "F"),
+                        onToggleFullscreen
+                    )
                 }
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    "Space pause · ←/→ 10 s · ↑/↓ volume · M mute · F full screen" +
-                        (if (nextEpisodeTitle != null) " · N next episode" else "") + " · Esc back",
-                    color = Color(0x99FFFFFF),
-                    fontSize = 11.sp
-                )
             }
+        }
+
+        // Milestone O: shown during the intro whether the controls are showing or not (above them when they are).
+        if (skipIntroVisible) {
+            SkipIntroButton(
+                onClick = { poke(); skipIntro() },
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(end = 24.dp, bottom = if (controlsVisible) 108.dp else 40.dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun SkipIntroButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
+    val interaction = remember { MutableInteractionSource() }
+    val hovered by interaction.collectIsHoveredAsState()
+    WithTooltip(tooltipText("Skip intro", "S"), modifier) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .clip(RoundedCornerShape(50))
+                .background(if (hovered) Color.White else Color(0xCC14171F))
+                .hoverable(interaction)
+                .pointerHoverIcon(PointerIcon.Hand)
+                .clickable(onClick = onClick)
+                .padding(start = 16.dp, end = 18.dp, top = 10.dp, bottom = 10.dp)
+        ) {
+            val content = if (hovered) Color(0xFF111318) else Color.White
+            Icon(DesktopIcons.SkipNext, contentDescription = null, tint = content, modifier = Modifier.size(22.dp))
+            Spacer(Modifier.width(8.dp))
+            Text("Skip intro", color = content, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+        }
+    }
+}
+
+/** Pill with the skip icon and a label: an icon alone isn't clear enough for this one (L.2). */
+@Composable
+private fun NextEpisodeButton(nextTitle: String, onClick: () -> Unit) {
+    val interaction = remember { MutableInteractionSource() }
+    val hovered by interaction.collectIsHoveredAsState()
+    WithTooltip(tooltipText("Next: $nextTitle", "N")) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .padding(end = 8.dp)
+                .clip(RoundedCornerShape(50))
+                .background(if (hovered) Color(0x40FFFFFF) else Color(0x26FFFFFF))
+                .hoverable(interaction)
+                .pointerHoverIcon(PointerIcon.Hand)
+                .clickable(onClick = onClick)
+                .padding(start = 14.dp, end = 16.dp, top = 8.dp, bottom = 8.dp)
+        ) {
+            Icon(DesktopIcons.SkipNext, contentDescription = null, tint = Color.White, modifier = Modifier.size(22.dp))
+            Spacer(Modifier.width(6.dp))
+            Text("Next episode", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
         }
     }
 }
@@ -320,15 +464,37 @@ fun PlayerScreen(
 private fun VolumeControl(player: VlcPlayer) {
     val volume by player.volume
     val muted by player.isMuted
+    val silent = muted || volume == 0
     Row(verticalAlignment = Alignment.CenterVertically) {
-        ControlButton(if (muted || volume == 0) "🔇" else "🔊", { player.toggleMute() })
-        Slider(
-            value = if (muted) 0f else volume / 100f,
-            onValueChange = { player.setVolume((it * 100).toInt()) },
-            valueRange = 0f..1.5f,
-            colors = SliderDefaults.colors(thumbColor = Color.White, activeTrackColor = Color.White, inactiveTrackColor = Color(0x55FFFFFF)),
-            modifier = Modifier.width(110.dp)
+        IconActionButton(
+            if (silent) DesktopIcons.VolumeOff else DesktopIcons.VolumeUp,
+            tooltipText(if (muted) "Unmute" else "Mute", "M"),
+            { player.toggleMute() }
         )
+        // VLC allows up to 150 %; the bar covers 0–150 like before.
+        ThinSlider(
+            fraction = if (muted) 0f else volume / MAX_VOLUME.toFloat(),
+            onChange = { player.setVolume((it * MAX_VOLUME).toInt()) },
+            color = Color.White,
+            modifier = Modifier.width(96.dp)
+        )
+    }
+}
+
+private const val MAX_VOLUME = 150
+
+/** Task K.1: Off + the subtitle tracks VLC found; hidden when there are none. */
+@Composable
+private fun SubtitleMenu(player: VlcPlayer) {
+    val tracks by player.subtitleTracks
+    val selected by player.selectedSubtitle
+    if (tracks.isEmpty()) return
+    var open by remember { mutableStateOf(false) }
+    Box {
+        IconActionButton(DesktopIcons.Subtitles, "Subtitles", { open = true })
+        TrackMenu("Subtitles", open, listOf(AudioTrackOption(VlcTracks.OFF, TrackLabels.OFF)) + tracks, selected, onDismiss = { open = false }) {
+            player.selectSubtitle(it)
+        }
     }
 }
 
@@ -339,23 +505,103 @@ private fun AudioTrackMenu(player: VlcPlayer) {
     if (tracks.size < 2) return
     var open by remember { mutableStateOf(false) }
     Box {
-        ControlButton("🎧  Audio", { open = true })
-        DropdownMenu(expanded = open, onDismissRequest = { open = false }, containerColor = DesktopColors.Surface) {
-            tracks.forEach { track ->
-                DropdownMenuItem(
-                    text = {
-                        Text(
-                            (if (track.id == selected) "✓  " else "     ") + track.label,
-                            color = DesktopColors.TextPrimary
-                        )
-                    },
-                    onClick = { player.selectAudioTrack(track.id); open = false }
-                )
-            }
+        IconActionButton(DesktopIcons.Audiotrack, "Audio track", { open = true })
+        TrackMenu("Audio", open, tracks, selected, onDismiss = { open = false }) { player.selectAudioTrack(it) }
+    }
+}
+
+/**
+ * P.8: the track menu above its button: a heading, then one row per track (the language, then the format), the
+ * chosen one checked. Up/Down move through the rows, Enter picks one, Esc closes the menu.
+ */
+@Composable
+private fun TrackMenu(title: String, open: Boolean, tracks: List<AudioTrackOption>, selected: Int, onDismiss: () -> Unit, onSelect: (Int) -> Unit) {
+    DropdownMenu(
+        expanded = open,
+        onDismissRequest = onDismiss,
+        containerColor = DesktopColors.Surface,
+        shape = RoundedCornerShape(DcTokens.Radius.CARD.dp),
+        modifier = Modifier.widthIn(min = 260.dp, max = 380.dp)
+    ) {
+        Text(
+            title,
+            style = DesktopType.caption.copy(fontWeight = FontWeight.SemiBold),
+            color = DesktopColors.TextTertiary,
+            modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 6.dp)
+        )
+        tracks.forEach { track ->
+            DesktopChoiceRow(
+                title = track.label,
+                supporting = track.detail,
+                selected = track.id == selected,
+                onClick = { onSelect(track.id); onDismiss() },
+                modifier = Modifier.padding(horizontal = 6.dp)
+            )
         }
     }
 }
 
+/**
+ * Thin bar for seeking and volume: thicker on hover, with a thumb while hovered or dragged. Click or drag anywhere;
+ * reports fractions 0–1 through [onChange], then [onChangeFinished] on release.
+ */
+@Composable
+private fun ThinSlider(
+    fraction: Float,
+    onChange: (Float) -> Unit,
+    modifier: Modifier = Modifier,
+    onChangeFinished: () -> Unit = {},
+    enabled: Boolean = true,
+    color: Color = DesktopColors.Accent
+) {
+    // The gesture handlers outlive recompositions; always call the latest callbacks (they capture the duration).
+    val change by rememberUpdatedState(onChange)
+    val finished by rememberUpdatedState(onChangeFinished)
+    val interaction = remember { MutableInteractionSource() }
+    val hovered by interaction.collectIsHoveredAsState()
+    var dragging by remember { mutableStateOf(false) }
+    var widthPx by remember { mutableIntStateOf(1) }
+    val active = enabled && (hovered || dragging)
+    val barHeight by animateDpAsState(if (active) 6.dp else 4.dp)
+    val thumbSize = 14.dp
+    val thumbPx = with(LocalDensity.current) { thumbSize.toPx() }
+    val current = fraction.coerceIn(0f, 1f)
+    fun at(x: Float) = (x / widthPx).coerceIn(0f, 1f)
+
+    Box(
+        contentAlignment = Alignment.CenterStart,
+        modifier = modifier
+            .height(24.dp)
+            .onSizeChanged { widthPx = it.width.coerceAtLeast(1) }
+            .hoverable(interaction, enabled)
+            .then(if (enabled) Modifier.pointerHoverIcon(PointerIcon.Hand) else Modifier)
+            .pointerInput(enabled) {
+                if (!enabled) return@pointerInput
+                detectTapGestures { change(at(it.x)); finished() }
+            }
+            .pointerInput(enabled) {
+                if (!enabled) return@pointerInput
+                detectHorizontalDragGestures(
+                    onDragStart = { dragging = true; change(at(it.x)) },
+                    onDragEnd = { dragging = false; finished() },
+                    onDragCancel = { dragging = false; finished() }
+                ) { pointer, _ -> pointer.consume(); change(at(pointer.position.x)) }
+            }
+    ) {
+        Box(Modifier.fillMaxWidth().height(barHeight).clip(RoundedCornerShape(50)).background(Color(0x4DFFFFFF)))
+        Box(Modifier.fillMaxWidth(current).height(barHeight).clip(RoundedCornerShape(50)).background(color))
+        if (active) {
+            Box(
+                Modifier
+                    .offset { IntOffset((current * widthPx - thumbPx / 2).roundToInt(), 0) }
+                    .size(thumbSize)
+                    .background(color, CircleShape)
+            )
+        }
+    }
+}
+
+/** Text pill for the dialog-style screens (slow connection). */
 @Composable
 private fun ControlButton(label: String, onClick: () -> Unit, primary: Boolean = false) {
     Text(

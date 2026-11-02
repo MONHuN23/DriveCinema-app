@@ -1,7 +1,5 @@
 package com.drivecinema.app.ui.tv.grid
 
-import androidx.compose.animation.Crossfade
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -25,27 +23,23 @@ import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import coil.compose.AsyncImage
-import com.drivecinema.app.core.database.entity.MediaItemEntity
-import com.drivecinema.app.core.database.entity.SeriesEntity
+import com.drivecinema.app.ui.tv.TvInitialFocus
+import com.drivecinema.app.ui.tv.rememberTvReturnFocus
 import com.drivecinema.app.ui.tv.home.TvPosterCard
-import com.drivecinema.app.ui.tv.home.TvPosterCardDefaults
+import com.drivecinema.app.ui.tv.home.TvAmbientBackdrop
+import com.drivecinema.app.ui.tv.home.TvAmbientBackdropState
+import com.drivecinema.app.ui.tv.home.trackDpadHold
 
 object TvCollectionGridDefaults {
     const val ColumnCount: Int = 6
@@ -68,53 +62,30 @@ fun TvCollectionGridScreen(
     onBackClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    var activeBackdropPath by remember { mutableStateOf<String?>(null) }
+    val backdrop = remember { TvAmbientBackdropState() }
     val sortedItems = remember(items) { items.sortedBy { it.title.lowercase() } }
     val firstItemFocusRequester = remember { FocusRequester() }
+    // Back from a title lands on its card (Task M.3). Only once the grid has items: a sync that adds a film no
+    // longer pulls focus back to the first card.
+    val returnFocus = rememberTvReturnFocus()
 
-    LaunchedEffect(sortedItems) {
-        if (sortedItems.isNotEmpty()) {
-            firstItemFocusRequester.requestFocus()
-        }
+    TvInitialFocus(returnFocus, ready = sortedItems.isNotEmpty()) {
+        firstItemFocusRequester.requestFocus()
     }
 
     Box(
         modifier = modifier
             .fillMaxSize()
             .background(TvCollectionGridDefaults.BackgroundCanvas)
+            .trackDpadHold(backdrop)
     ) {
-        // Ambient Backdrop Crossfade in upper background
-        Crossfade(
-            targetState = activeBackdropPath,
-            animationSpec = tween(durationMillis = 300),
+        // Ambient backdrop of the focused card, once focus has rested (Task M.1)
+        TvAmbientBackdrop(
+            state = backdrop,
+            height = 450.dp,
+            topScrimColor = Color(0x660C0D10),
             label = "tv_grid_backdrop_crossfade"
-        ) { backdrop ->
-            if (!backdrop.isNullOrEmpty()) {
-                Box(modifier = Modifier.fillMaxSize()) {
-                    AsyncImage(
-                        model = "https://image.tmdb.org/t/p/w1280$backdrop",
-                        contentDescription = null,
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(450.dp)
-                    )
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(450.dp)
-                            .background(
-                                Brush.verticalGradient(
-                                    colors = listOf(
-                                        Color(0x660C0D10),
-                                        TvCollectionGridDefaults.BackgroundCanvas
-                                    )
-                                )
-                            )
-                    )
-                }
-            }
-        }
+        )
 
         Column(
             modifier = Modifier
@@ -168,13 +139,12 @@ fun TvCollectionGridScreen(
                         title = item.title,
                         posterPath = item.posterPath,
                         backdropPath = item.backdropPath,
-                        onClick = { onItemClick(item) },
-                        onFocusChange = { isFocused, path ->
-                            if (isFocused && path != null) {
-                                activeBackdropPath = path
-                            }
+                        onClick = {
+                            returnFocus.opened(item.id)
+                            onItemClick(item)
                         },
-                        modifier = itemModifier
+                        onFocusChange = backdrop::onCardFocused,
+                        modifier = itemModifier.then(returnFocus.modifierFor(item.id))
                     )
                 }
             }

@@ -1,5 +1,7 @@
 package com.drivecinema.app.ui.mobile.home
 
+import com.drivecinema.app.ui.icons.AppIcons
+import androidx.compose.material3.Icon
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -35,10 +37,19 @@ import com.drivecinema.app.core.database.dao.ContinueWatchingItem
 import com.drivecinema.app.core.player.ContinueWatching
 import com.drivecinema.app.core.database.entity.MediaItemEntity
 import com.drivecinema.app.core.database.entity.SeriesEntity
-
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
+import com.drivecinema.app.ui.TmdbImages
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import com.drivecinema.app.theme.DcColors
+import com.drivecinema.app.theme.DcTheme
+import com.drivecinema.app.ui.design.DcIconButton
+import com.drivecinema.app.ui.design.DcTokens
+
 
 @Composable
 fun MobileHomeScreen(
@@ -48,7 +59,11 @@ fun MobileHomeScreen(
     onContinueWatchingClick: (ContinueWatchingItem) -> Unit,
     onPairTvClick: (() -> Unit)? = null,
     onAccountClick: (() -> Unit)? = null,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    /** Milestone D: a cast button on each Continue Watching card; null hides it (no TV linked). */
+    onContinueWatchingPlayOnTv: ((ContinueWatchingItem) -> Unit)? = null,
+    /** A TV is linked: the top bar's cast button gets a green dot. */
+    tvLinked: Boolean = false
 ) {
     Box(
         modifier = modifier
@@ -61,80 +76,12 @@ fun MobileHomeScreen(
         ) {
             // Header Bar
             item {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 20.dp, vertical = 16.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "DriveCinema",
-                        color = Color(0xFFE50914),
-                        fontSize = 22.sp,
-                        fontWeight = FontWeight.Black
-                    )
-
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        if (onPairTvClick != null) {
-                            Row(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(Color(0xFF1E2128))
-                                    .clickable(onClick = onPairTvClick)
-                                    .padding(horizontal = 12.dp, vertical = 6.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                Text(text = "📺", fontSize = 14.sp)
-                                Text(
-                                    text = "Pair TV",
-                                    color = Color(0xFFF0F2F5),
-                                    fontSize = 13.sp,
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                            }
-                        }
-
-                        if (onAccountClick != null || state.account.email != null) {
-                            Row(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(Color(0xFF1E2128))
-                                    .clickable(enabled = onAccountClick != null, onClick = { onAccountClick?.invoke() })
-                                    .padding(horizontal = 10.dp, vertical = 6.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                if (!state.account.photoLink.isNullOrEmpty()) {
-                                    AsyncImage(
-                                        model = state.account.photoLink,
-                                        contentDescription = "User Avatar",
-                                        contentScale = ContentScale.Crop,
-                                        modifier = Modifier
-                                            .size(20.dp)
-                                            .clip(CircleShape)
-                                    )
-                                } else {
-                                    Text(text = "👤", fontSize = 13.sp)
-                                }
-                                val label = state.account.displayName ?: state.account.email ?: "Account"
-                                Text(
-                                    text = label,
-                                    color = Color(0xFFF0F2F5),
-                                    fontSize = 13.sp,
-                                    fontWeight = FontWeight.Medium,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier.widthIn(max = 120.dp)
-                                )
-                            }
-                        }
-                    }
-                }
+                MobileHomeTopBar(
+                    account = state.account,
+                    tvLinked = tvLinked,
+                    onPairTvClick = onPairTvClick,
+                    onAccountClick = onAccountClick
+                )
             }
 
             // Continue Watching Section
@@ -154,7 +101,8 @@ fun MobileHomeScreen(
                         items(state.continueWatching, key = { it.id }) { item ->
                             ContinueWatchingCard(
                                 item = item,
-                                onClick = { onContinueWatchingClick(item) }
+                                onClick = { onContinueWatchingClick(item) },
+                                onPlayOnTvClick = onContinueWatchingPlayOnTv?.let { send -> { send(item) } }
                             )
                         }
                     }
@@ -216,23 +164,25 @@ fun MobileHomeScreen(
 fun ContinueWatchingCard(
     item: ContinueWatchingItem,
     onClick: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onPlayOnTvClick: (() -> Unit)? = null
 ) {
     val progress = if (item.durationMs > 0) item.positionMs.toFloat() / item.durationMs.toFloat() else 0f
 
     Column(
         modifier = modifier
-            .width(180.dp)
+            .width(200.dp)
             .clickable(onClick = onClick)
     ) {
+        // 16:9 artwork; its only action is play (the whole card).
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(100.dp)
-                .clip(RoundedCornerShape(8.dp))
-                .background(Color(0xFF16181D))
+                .height(112.dp)
+                .clip(RoundedCornerShape(DcTokens.Radius.CONTROL.dp))
+                .background(DcColors.Surface1)
         ) {
-            val backdropUrl = if (item.backdropPath != null) "https://image.tmdb.org/t/p/w500${item.backdropPath}" else null
+            val backdropUrl = TmdbImages.wideCard(item.backdropPath)
             if (backdropUrl != null) {
                 AsyncImage(
                     model = backdropUrl,
@@ -261,43 +211,145 @@ fun ContinueWatchingCard(
             }
 
             // Play Icon overlay
-            Text(
-                text = "▶",
-                color = Color.White,
-                fontSize = 20.sp,
-                modifier = Modifier.align(Alignment.Center)
-            )
+            Box(
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .size(36.dp)
+                    .clip(CircleShape)
+                    .background(Color.Black.copy(alpha = 0.6f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(AppIcons.PlayArrow, contentDescription = "Play", tint = Color.White, modifier = Modifier.size(22.dp))
+            }
 
             // Progress bar (an "Up next" card hasn't been started yet)
             if (!item.isUpNext) LinearProgressIndicator(
                 progress = { progress.coerceIn(0f, 1f) },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(4.dp)
+                    .height(3.dp)
                     .align(Alignment.BottomCenter),
-                color = Color(0xFFE50914),
-                trackColor = Color.DarkGray
+                color = DcColors.Brand,
+                trackColor = Color.White.copy(alpha = 0.2f),
+                gapSize = 0.dp,
+                drawStopIndicator = {}
             )
         }
 
-        Spacer(modifier = Modifier.height(6.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = item.title,
+                    style = DcTheme.type.body.copy(fontWeight = FontWeight.SemiBold),
+                    color = DcColors.Text1,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                ContinueWatching.subtitle(item)?.let { subtitle ->
+                    Text(
+                        text = subtitle,
+                        style = DcTheme.type.caption.copy(
+                            fontWeight = if (item.isUpNext) FontWeight.SemiBold else FontWeight.Normal
+                        ),
+                        color = if (item.isUpNext) DcColors.Brand else DcColors.Text3,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+            // Milestone D: send this title to the linked TV instead, beside the title so the artwork keeps one action.
+            if (onPlayOnTvClick != null) {
+                DcIconButton(
+                    icon = AppIcons.Cast,
+                    contentDescription = "Play on TV",
+                    onClick = onPlayOnTvClick,
+                    modifier = Modifier.offset(x = 10.dp).testTag("continue_play_on_tv")
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Home's top bar: the logo, then two icon buttons with 48 dp targets: cast (pair a TV; a green dot once one is
+ * linked) and the account avatar (Settings).
+ */
+@Composable
+private fun MobileHomeTopBar(
+    account: AccountUiState,
+    tvLinked: Boolean,
+    onPairTvClick: (() -> Unit)?,
+    onAccountClick: (() -> Unit)?
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(64.dp)
+            .padding(start = 20.dp, end = 8.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
         Text(
-            text = item.title,
-            color = Color.White,
-            fontSize = 14.sp,
-            fontWeight = FontWeight.SemiBold,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
+            text = "DriveCinema",
+            color = DcColors.Brand,
+            fontSize = 22.sp,
+            fontWeight = FontWeight.Black
         )
-        ContinueWatching.subtitle(item)?.let { subtitle ->
-            Text(
-                text = subtitle,
-                color = if (item.isUpNext) Color(0xFFE50914) else Color(0xFF8F94A3),
-                fontSize = 12.sp,
-                fontWeight = if (item.isUpNext) FontWeight.SemiBold else FontWeight.Normal,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
+
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (onPairTvClick != null) {
+                Box {
+                    DcIconButton(
+                        icon = AppIcons.Cast,
+                        contentDescription = if (tvLinked) "Pair TV (a TV is linked)" else "Pair TV",
+                        onClick = onPairTvClick,
+                        modifier = Modifier.testTag("home_pair_tv")
+                    )
+                    if (tvLinked) {
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .padding(top = 12.dp, end = 10.dp)
+                                .size(10.dp)
+                                .clip(CircleShape)
+                                .background(DcColors.Canvas)
+                                .padding(1.dp)
+                                .clip(CircleShape)
+                                .background(DcColors.SuccessDot)
+                                .testTag("home_tv_linked_dot")
+                        )
+                    }
+                }
+            }
+
+            if (onAccountClick != null || account.email != null) {
+                Box(
+                    modifier = Modifier
+                        .size(48.dp)
+                        .clip(CircleShape)
+                        .clickable(enabled = onAccountClick != null, role = Role.Button, onClick = { onAccountClick?.invoke() })
+                        .semantics { contentDescription = "Account and settings" }
+                        .testTag("home_account"),
+                    contentAlignment = Alignment.Center
+                ) {
+                    val avatar = Modifier.size(32.dp).clip(CircleShape)
+                    if (!account.photoLink.isNullOrEmpty()) {
+                        AsyncImage(
+                            model = account.photoLink,
+                            contentDescription = null,
+                            contentScale = ContentScale.Crop,
+                            modifier = avatar
+                        )
+                    } else {
+                        Box(avatar.background(DcColors.Surface3), contentAlignment = Alignment.Center) {
+                            Icon(AppIcons.Person, contentDescription = null, tint = DcColors.Text1, modifier = Modifier.size(20.dp))
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -321,7 +373,7 @@ fun PosterCard(
                 .clip(RoundedCornerShape(8.dp))
                 .background(Color(0xFF16181D))
         ) {
-            val fullUrl = if (posterPath != null) "https://image.tmdb.org/t/p/w500$posterPath" else null
+            val fullUrl = TmdbImages.poster(posterPath)
             if (fullUrl != null) {
                 AsyncImage(
                     model = fullUrl,

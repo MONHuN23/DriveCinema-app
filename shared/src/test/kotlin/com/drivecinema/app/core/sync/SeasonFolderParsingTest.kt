@@ -10,6 +10,7 @@ import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Test
+import com.drivecinema.app.core.metadata.MediaFilenameParser
 
 /**
  * Report F-14: the season number of a season folder came from `s` + digits found anywhere in the name, so
@@ -36,13 +37,14 @@ class SeasonFolderParsingTest {
         val folders = CASES.keys.mapIndexed { i, name -> "f$i" to name }
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse {
-                val id = Regex("""^'([^']+)' in parents""").find(request.requestUrl!!.queryParameter("q").orEmpty())!!.groupValues[1]
-                val files = when (id) {
-                    "series" -> listOf(JSONObject().put("id", "show").put("name", "Show").put("mimeType", FolderQueueCrawler.FOLDER_MIME_TYPE))
-                    "show" -> folders.map { (fid, name) -> JSONObject().put("id", fid).put("name", name).put("mimeType", FolderQueueCrawler.FOLDER_MIME_TYPE) }
-                    else -> listOf(JSONObject().put("id", "ep_$id").put("name", "Episode 1.mkv").put("mimeType", "video/x-matroska"))
-                }
-                return MockResponse().setBody(JSONObject().put("files", JSONArray(files)).toString())
+                val ids = FakeDriveListing.folderIds(request.requestUrl!!.queryParameter("q"))
+                return MockResponse().setBody(FakeDriveListing.body(ids) { id ->
+                    when (id) {
+                        "series" -> listOf(JSONObject().put("id", "show").put("name", "Show").put("mimeType", FolderQueueCrawler.FOLDER_MIME_TYPE))
+                        "show" -> folders.map { (fid, name) -> JSONObject().put("id", fid).put("name", name).put("mimeType", FolderQueueCrawler.FOLDER_MIME_TYPE) }
+                        else -> listOf(JSONObject().put("id", "ep_$id").put("name", "Episode 1.mkv").put("mimeType", "video/x-matroska"))
+                    }
+                })
             }
         }
         server.start()
@@ -50,5 +52,12 @@ class SeasonFolderParsingTest {
             .crawl(seriesFolderId = "series", accessToken = "t")
         val seasonByFolder = library.episodes.associate { ep -> folders.toMap().getValue(ep.parentFolderId) to ep.seasonNumber }
         assertEquals(CASES, CASES.keys.associateWith { seasonByFolder[it] })
+    }
+
+    @Test
+    fun orNullVariantTellsSeasonFoldersFromOtherFolders() {
+        // Task I.1: an import must not file "Extras" episodes under season 1.
+        val expected = CASES.mapValues { (name, season) -> if (name.contains(Regex("(?i)extras|bonus|specials|behind"))) null else season }
+        assertEquals(expected, CASES.keys.associateWith { MediaFilenameParser.parseSeasonFolderOrNull(it) })
     }
 }

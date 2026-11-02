@@ -23,10 +23,23 @@ import uk.co.caprica.vlcj.player.embedded.videosurface.callback.BufferFormat
 import uk.co.caprica.vlcj.player.embedded.videosurface.callback.BufferFormatCallback
 import uk.co.caprica.vlcj.player.embedded.videosurface.callback.RenderCallback
 import uk.co.caprica.vlcj.player.embedded.videosurface.callback.format.RV32BufferFormat
+import com.drivecinema.app.core.metadata.MediaInfoFormat
 import java.nio.ByteBuffer
 
 /** An audio track as offered in the player's track menu. */
-data class AudioTrackOption(val id: Int, val label: String)
+/** A track menu entry: [label] is the language, [detail] the line under it (P.8). */
+data class AudioTrackOption(val id: Int, val label: String, val detail: String? = null)
+
+/** Task L.3: what libVLC reports about the playing copy; saved on its `media_sources` row. Null = not reported. */
+data class PlayedTech(
+    val widthPx: Int?,
+    val heightPx: Int?,
+    val durationMs: Long?,
+    val videoCodec: String?,
+    val audioCodec: String?,
+    val audioChannels: Int?,
+    val frameRate: Float?
+)
 
 /** Events the player screen reacts to (saving progress). */
 enum class PlayerEvent { PAUSED, FINISHED }
@@ -99,10 +112,15 @@ class VlcPlayer : AutoCloseable {
     val durationMs = mutableLongStateOf(0L)
     val audioTracks = mutableStateOf<List<AudioTrackOption>>(emptyList())
     val selectedAudioTrack = mutableIntStateOf(-1)
+    /** Task K.1: subtitle tracks inside the file (and, for local files, VLC's own same-name .srt). */
+    val subtitleTracks = mutableStateOf<List<AudioTrackOption>>(emptyList())
+    val selectedSubtitle = mutableIntStateOf(VlcTracks.OFF)
     val volume = mutableIntStateOf(100)
     val isMuted = mutableStateOf(false)
 
     @Volatile var onEvent: (PlayerEvent) -> Unit = {}
+    @Volatile var onTechInfo: (PlayedTech) -> Unit = {}
+    @Volatile private var techReported = false
 
     private val factory = MediaPlayerFactory("--no-video-title-show", "--quiet")
     private val player: EmbeddedMediaPlayer = factory.mediaPlayers().newEmbeddedMediaPlayer()
@@ -123,6 +141,7 @@ class VlcPlayer : AutoCloseable {
                 isPlaying.value = true
                 isBuffering.value = false
                 hasEnded.value = false
+                if (!techReported) mediaPlayer.submit { reportTech() }
             }
 
             override fun paused(mediaPlayer: MediaPlayer) {
@@ -160,6 +179,7 @@ class VlcPlayer : AutoCloseable {
 
             override fun elementaryStreamAdded(mediaPlayer: MediaPlayer, type: TrackType, id: Int) {
                 if (type == TrackType.AUDIO) mediaPlayer.submit { refreshAudioTracks() }
+                if (type == TrackType.TEXT) mediaPlayer.submit { refreshSubtitleTracks() }
             }
         })
     }
@@ -169,6 +189,7 @@ class VlcPlayer : AutoCloseable {
         hasEnded.value = false
         error.value = null
         isBuffering.value = true
+        techReported = false
         val options = buildList {
             // A bigger network buffer rides out slow or uneven connections (e.g. a phone hotspot).
             add(":network-caching=$NETWORK_CACHING_MS")
@@ -209,10 +230,52 @@ class VlcPlayer : AutoCloseable {
         selectedAudioTrack.intValue = id
     }
 
+    /** [VlcTracks.OFF] hides subtitles. */
+    fun selectSubtitle(id: Int) {
+        player.subpictures().setTrack(id)
+        selectedSubtitle.intValue = id
+    }
+
+    /** Codecs, resolution, frame rate and length of the open file (VLC can't tell HDR); retried on the next play event. */
+    private fun reportTech() {
+        if (techReported) return
+        val info = runCatching { player.media().info() }.getOrNull() ?: return
+        val video = info.videoTracks().firstOrNull()
+        val selectedAudio = player.audio().track()
+        val audio = info.audioTracks().let { tracks -> tracks.firstOrNull { it.id() == selectedAudio } ?: tracks.firstOrNull() }
+        if (video == null && audio == null) return
+        techReported = true
+        onTechInfo(
+            PlayedTech(
+                widthPx = video?.width()?.takeIf { it > 0 },
+                heightPx = video?.height()?.takeIf { it > 0 },
+                durationMs = player.status().length().takeIf { it > 0 },
+                videoCodec = MediaInfoFormat.videoCodecName(video?.codecName()),
+                audioCodec = MediaInfoFormat.audioCodecName(audio?.codecName()),
+                audioChannels = audio?.channels()?.takeIf { it > 0 },
+                frameRate = video?.takeIf { it.frameRateBase() > 0 && it.frameRate() > 0 }
+                    ?.let { it.frameRate().toFloat() / it.frameRateBase() }
+            )
+        )
+    }
+
+    private fun refreshSubtitleTracks() {
+        val details = runCatching {
+            player.media().info()?.textTracks().orEmpty()
+                .map { VlcTrackDetails(it.id(), it.language(), it.codecName(), description = it.description()) }
+        }.getOrDefault(emptyList())
+        subtitleTracks.value = VlcTracks.subtitleOptions(player.subpictures().trackDescriptions().map { it.id() to it.description() }, details)
+        selectedSubtitle.intValue = player.subpictures().track()
+    }
+
     private fun refreshAudioTracks() {
-        audioTracks.value = player.audio().trackDescriptions()
-            .filter { it.id() >= 0 } // -1 is VLC's "Disable"
-            .map { AudioTrackOption(it.id(), it.description()) }
+        val details = runCatching {
+            player.media().info()?.audioTracks().orEmpty()
+                .map { VlcTrackDetails(it.id(), it.language(), it.codecName(), it.channels(), it.description()) }
+        }.getOrDefault(emptyList())
+        // -1 is VLC's "Disable"; audioOptions leaves it out.
+        audioTracks.value = VlcTracks.audioOptions(player.audio().trackDescriptions().map { it.id() to it.description() }, details)
+        refreshSubtitleTracks()
         selectedAudioTrack.intValue = player.audio().track()
     }
 

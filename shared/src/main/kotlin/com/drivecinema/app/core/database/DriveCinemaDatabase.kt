@@ -2,10 +2,13 @@ package com.drivecinema.app.core.database
 
 import androidx.room.Database
 import androidx.room.RoomDatabase
+import com.drivecinema.app.core.database.dao.DeviceSyncDao
+import com.drivecinema.app.core.database.dao.ImportQueueDao
 import com.drivecinema.app.core.database.dao.MediaDao
 import com.drivecinema.app.core.database.dao.MediaSourceDao
 import com.drivecinema.app.core.database.dao.PlaybackProgressDao
 import com.drivecinema.app.core.database.dao.SyncMetadataDao
+import com.drivecinema.app.core.database.entity.ImportQueueEntity
 import com.drivecinema.app.core.database.entity.MediaItemEntity
 import com.drivecinema.app.core.database.entity.MediaSourceEntity
 import com.drivecinema.app.core.database.entity.PendingMatchEntity
@@ -20,9 +23,10 @@ import com.drivecinema.app.core.database.entity.SyncMetadataEntity
         PlaybackProgressEntity::class,
         SyncMetadataEntity::class,
         MediaSourceEntity::class,
-        PendingMatchEntity::class
+        PendingMatchEntity::class,
+        ImportQueueEntity::class
     ],
-    version = 3,
+    version = DriveCinemaDatabase.SCHEMA_VERSION,
     exportSchema = true
 )
 abstract class DriveCinemaDatabase : RoomDatabase() {
@@ -30,6 +34,8 @@ abstract class DriveCinemaDatabase : RoomDatabase() {
     abstract fun playbackProgressDao(): PlaybackProgressDao
     abstract fun syncMetadataDao(): SyncMetadataDao
     abstract fun mediaSourceDao(): MediaSourceDao
+    abstract fun importQueueDao(): ImportQueueDao
+    abstract fun deviceSyncDao(): DeviceSyncDao
 
     /**
      * Platform builders are extension functions on this companion: Android (`getInstance(context)`, with
@@ -37,5 +43,8 @@ abstract class DriveCinemaDatabase : RoomDatabase() {
      */
     companion object {
         const val DATABASE_NAME = "drivecinema.db"
+
+        /** The schema version this build reads and writes; bump it together with a new `SchemaStep`. */
+        const val SCHEMA_VERSION = 5
     }
 }

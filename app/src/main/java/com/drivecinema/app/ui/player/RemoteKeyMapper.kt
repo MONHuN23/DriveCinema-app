@@ -10,6 +10,7 @@ sealed interface PlayerKeyAction {
     data class SeekBy(val deltaMs: Long) : PlayerKeyAction
     data object Exit : PlayerKeyAction
     data object NextEpisode : PlayerKeyAction
+    data object PreviousEpisode : PlayerKeyAction
 }
 
 /**
@@ -37,8 +38,8 @@ object RemoteKeyMapper {
         )
     }
 
-    /** Dedicated media keys; null when the key is not a media key (or Next has no episode to go to). */
-    fun mediaAction(keyCode: Int, hasNextEpisode: Boolean): PlayerKeyAction? = when (keyCode) {
+    /** Dedicated media keys; null when the key is not a media key (or Next / Previous has no episode to go to). */
+    fun mediaAction(keyCode: Int, hasNextEpisode: Boolean, hasPreviousEpisode: Boolean = false): PlayerKeyAction? = when (keyCode) {
         KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> PlayerKeyAction.TogglePlayPause
         KeyEvent.KEYCODE_MEDIA_PLAY -> PlayerKeyAction.Play
         KeyEvent.KEYCODE_MEDIA_PAUSE -> PlayerKeyAction.Pause
@@ -46,6 +47,7 @@ object RemoteKeyMapper {
         KeyEvent.KEYCODE_MEDIA_REWIND, KeyEvent.KEYCODE_MEDIA_STEP_BACKWARD -> PlayerKeyAction.SeekBy(-SEEK_STEP_MS)
         KeyEvent.KEYCODE_MEDIA_STOP -> PlayerKeyAction.Exit
         KeyEvent.KEYCODE_MEDIA_NEXT -> if (hasNextEpisode) PlayerKeyAction.NextEpisode else null
+        KeyEvent.KEYCODE_MEDIA_PREVIOUS -> if (hasPreviousEpisode) PlayerKeyAction.PreviousEpisode else null
         else -> null
     }
 

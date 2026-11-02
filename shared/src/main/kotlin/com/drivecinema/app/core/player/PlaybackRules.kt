@@ -46,12 +46,15 @@ object LocalIds {
 data class SelectedCopy(val kind: SourceKind, val sourceKey: String, val resumePositionMs: Long)
 
 /**
- * Picks the best available copy of a title (local first, then Drive) and the resume position from the most
+ * Picks the best available copy of a title (local first, then a paired PC, then Drive) and the resume position from the most
  * recently watched copy (progress model A). Null when every copy is currently unavailable.
  */
 class PlaybackSelector(private val dao: MediaSourceDao) {
 
-    suspend fun select(mediaItemId: String, requestedStartMs: Long = 0L): SelectedCopy? {
+    suspend fun select(mediaItemId: String, requestedStartMs: Long = 0L): SelectedCopy? = candidates(mediaItemId, requestedStartMs).firstOrNull()
+
+    /** Every available copy, best first (local, PC, Drive): a player tries the next when a PC turns out to be off. */
+    suspend fun candidates(mediaItemId: String, requestedStartMs: Long = 0L): List<SelectedCopy> {
         val latest = dao.getLatestProgressForItem(mediaItemId)
         val resume = when {
             latest == null -> requestedStartMs
@@ -62,10 +65,9 @@ class PlaybackSelector(private val dao: MediaSourceDao) {
         val sources = dao.getSourcesForItem(mediaItemId)
         if (sources.isEmpty()) {
             // Pre-C.4 rows without source records are Drive files keyed by their Drive ID.
-            return if (mediaItemId.startsWith(LocalIds.PREFIX)) null
-            else SelectedCopy(SourceKind.DRIVE, mediaItemId, resume)
+            return if (mediaItemId.startsWith(LocalIds.PREFIX)) emptyList()
+            else listOf(SelectedCopy(SourceKind.DRIVE, mediaItemId, resume))
         }
-        val best = BestSourceSelector.choose(sources) ?: return null
-        return SelectedCopy(best.kind, best.sourceKey, resume)
+        return BestSourceSelector.ranked(sources).map { SelectedCopy(it.kind, it.sourceKey, resume) }
     }
 }

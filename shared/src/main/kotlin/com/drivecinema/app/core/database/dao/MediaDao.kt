@@ -11,6 +11,7 @@ import com.drivecinema.app.core.database.entity.MediaSourceEntity
 import com.drivecinema.app.core.database.entity.SourceKind
 import com.drivecinema.app.core.database.entity.MediaType
 import com.drivecinema.app.core.database.entity.SeriesEntity
+import com.drivecinema.app.core.sync.DriveFileInfo
 import kotlinx.coroutines.flow.Flow
 
 data class ContinueWatchingItem(
@@ -29,6 +30,9 @@ data class ContinueWatchingItem(
     /** The series' last watched episode is finished; this card is the following episode, from the start. */
     val isUpNext: Boolean = false
 )
+
+/** Result row of [MediaDao.getEpisodeCountsFlow]. */
+data class SeriesEpisodeCount(val seriesId: String, val episodeCount: Int)
 
 @Dao
 interface MediaDao {
@@ -68,20 +72,42 @@ interface MediaDao {
     @Query("SELECT * FROM media_items WHERE type = 'MOVIE' AND tmdbId IS NULL AND isDeleted = 0")
     suspend fun getUnenrichedMovies(): List<MediaItemEntity>
 
-    // A series is hidden only when it has episodes and all of them are soft-deleted
-    // (e.g. after switching to a different library folder).
+    // A series is listed only while it has a playable episode. Found on the device: a show folder deleted or merged
+    // on Drive left an empty second show in the library (its row stays, with no episodes left).
     @Query("""
         SELECT * FROM series
-        WHERE NOT EXISTS (SELECT 1 FROM media_items m WHERE m.seriesId = series.id)
-           OR EXISTS (SELECT 1 FROM media_items m WHERE m.seriesId = series.id AND m.isDeleted = 0)
+        WHERE EXISTS (SELECT 1 FROM media_items m WHERE m.seriesId = series.id AND m.isDeleted = 0)
         ORDER BY title ASC
     """)
     fun getAllSeriesFlow(): Flow<List<SeriesEntity>>
 
+    /** Task L.3: what Drive (or a local scan) reports about a copy; a null leaves the stored value. */
+    @Query("""
+        UPDATE media_sources SET
+            sizeBytes = COALESCE(:sizeBytes, sizeBytes), widthPx = COALESCE(:widthPx, widthPx),
+            heightPx = COALESCE(:heightPx, heightPx), durationMs = COALESCE(:durationMs, durationMs),
+            container = COALESCE(:container, container)
+        WHERE sourceKey = :sourceKey
+    """)
+    suspend fun updateFileInfo(sourceKey: String, sizeBytes: Long?, widthPx: Int?, heightPx: Int?, durationMs: Long?, container: String?)
+
+    /** Playable episodes per series, for "3 of 10 watched" on the desktop's Series view (Task L.1). */
+    @Query("""
+        SELECT seriesId, COUNT(*) AS episodeCount FROM media_items
+        WHERE type = 'EPISODE' AND isDeleted = 0 AND seriesId IS NOT NULL
+        GROUP BY seriesId
+    """)
+    fun getEpisodeCountsFlow(): Flow<List<SeriesEpisodeCount>>
+
     @Query("SELECT * FROM series ORDER BY title ASC")
     suspend fun getAllSeries(): List<SeriesEntity>
 
-    @Query("SELECT * FROM series WHERE tmdbId IS NULL")
+    // Task N.2 (F-40): only series the library shows (with a playable episode), like getAllSeriesFlow.
+    @Query("""
+        SELECT * FROM series
+        WHERE tmdbId IS NULL
+          AND EXISTS (SELECT 1 FROM media_items m WHERE m.seriesId = series.id AND m.isDeleted = 0)
+    """)
     suspend fun getUnenrichedSeries(): List<SeriesEntity>
 
     @Query("SELECT * FROM media_items WHERE type = 'MOVIE' AND isDeleted = 0 AND (:query = '' OR title LIKE '%' || :query || '%') ORDER BY title ASC")
@@ -90,8 +116,7 @@ interface MediaDao {
     @Query("""
         SELECT * FROM series
         WHERE (:query = '' OR title LIKE '%' || :query || '%')
-          AND (NOT EXISTS (SELECT 1 FROM media_items m WHERE m.seriesId = series.id)
-               OR EXISTS (SELECT 1 FROM media_items m WHERE m.seriesId = series.id AND m.isDeleted = 0))
+          AND EXISTS (SELECT 1 FROM media_items m WHERE m.seriesId = series.id AND m.isDeleted = 0)
         ORDER BY title ASC
     """)
     fun searchSeriesFlow(query: String): Flow<List<SeriesEntity>>
@@ -120,6 +145,9 @@ interface MediaDao {
     @Query("UPDATE media_sources SET isAvailable = 1, lastSeenAt = :seenAt, libraryRootId = :libraryRootId WHERE sourceKey IN (:sourceKeys)")
     suspend fun markSourcesAvailable(sourceKeys: List<String>, libraryRootId: String?, seenAt: Long)
 
+    @Query("SELECT * FROM media_sources WHERE sourceKey IN (:sourceKeys)")
+    suspend fun getSourcesByKeys(sourceKeys: List<String>): List<MediaSourceEntity>
+
     /** An item is visible while at least one of its sources (Drive or local) is available. */
     @Query("""
         UPDATE media_items SET isDeleted = CASE WHEN EXISTS (
@@ -135,7 +163,11 @@ interface MediaDao {
     @Transaction
     suspend fun upsertCrawledSeries(series: List<SeriesEntity>, rematchSeriesIds: Set<String> = emptySet()) {
         val stored = series.map { it.id }.chunked(500).flatMap { getSeriesByIds(it) }.associateBy { it.id }
-        insertSeries(series.map { CrawledCatalogMerge.mergeSeries(it, stored[it.id], rematch = it.id in rematchSeriesIds) })
+        // Task N.1: unchanged rows are not written again.
+        series.map { CrawledCatalogMerge.mergeSeries(it, stored[it.id], rematch = it.id in rematchSeriesIds) }
+            .filter { it != stored[it.id] }
+            .takeIf { it.isNotEmpty() }
+            ?.let { insertSeries(it) }
     }
 
     /**
@@ -144,6 +176,10 @@ interface MediaDao {
      * soft-deleted; local sources are untouched. Existing source → item links (merges) are preserved,
      * TMDB enrichment of unchanged items is kept (see [CrawledCatalogMerge]), and playback_progress is
      * never touched.
+     *
+     * Task N.1: only rows that change are written. M.0 measured a refresh of an unchanged library rewriting every
+     * item, source and file-info row (about 850 statements, 0.6–0.9 s on the TV). An unchanged item keeps its
+     * `lastSyncedAt` (nothing reads it); `media_sources.lastSeenAt` still records every crawl.
      */
     @Transaction
     suspend fun replaceVisibleLibrary(
@@ -151,7 +187,11 @@ interface MediaDao {
         series: List<SeriesEntity>,
         episodes: List<MediaItemEntity>,
         libraryRootId: String? = null,
-        seenAt: Long = System.currentTimeMillis()
+        seenAt: Long = System.currentTimeMillis(),
+        /** Task L.3: size / resolution / length per Drive file ID, from the same crawl. */
+        fileInfo: Map<String, DriveFileInfo> = emptyMap(),
+        /** F-48: series matching changed since the stored matches were made, so every series is matched again. */
+        rematchAllSeries: Boolean = false
     ) {
         markSourcesUnavailable(SourceKind.DRIVE)
         val crawled = movies + episodes
@@ -161,22 +201,43 @@ interface MediaDao {
             .filterNot { CrawledCatalogMerge.isUnchanged(it, stored[it.id]) }
             .mapNotNull { it.seriesId }
             .toSet()
-        insertMediaItems(movies.map { CrawledCatalogMerge.mergeItem(it, stored[it.id]) })
-        upsertCrawledSeries(series, rematchSeriesIds = seriesWithNewEpisodes)
-        insertMediaItems(episodes.map { CrawledCatalogMerge.mergeItem(it, stored[it.id]) })
-        insertSourcesIfAbsent(
-            crawled.map {
-                MediaSourceEntity(
-                    sourceKey = it.id,
-                    mediaItemId = it.id,
-                    kind = SourceKind.DRIVE,
-                    libraryRootId = libraryRootId,
-                    lastSeenAt = seenAt
-                )
-            }
-        )
+        // Series matched again from scratch: their episodes start from their file names (F-48).
+        val storedSeries = series.map { it.id }.chunked(500).flatMap { getSeriesByIds(it) }.associateBy { it.id }
+        val freshSeries = if (rematchAllSeries) series.map { it.id }.toSet()
+            else series.filter { CrawledCatalogMerge.isRenamed(it, storedSeries[it.id]) }.map { it.id }.toSet()
+        fun changedRows(items: List<MediaItemEntity>) = items
+            .map { CrawledCatalogMerge.mergeItem(it, stored[it.id], keepEnrichment = it.seriesId !in freshSeries) }
+            .filter { merged -> stored[merged.id]?.copy(lastSyncedAt = merged.lastSyncedAt) != merged }
+        changedRows(movies).takeIf { it.isNotEmpty() }?.let { insertMediaItems(it) }
+        upsertCrawledSeries(series, rematchSeriesIds = if (rematchAllSeries) freshSeries else seriesWithNewEpisodes)
+        changedRows(episodes).takeIf { it.isNotEmpty() }?.let { insertMediaItems(it) }
+        val storedSources = crawled.map { it.id }.chunked(500).flatMap { getSourcesByKeys(it) }.associateBy { it.sourceKey }
+        crawled.filterNot { it.id in storedSources }.takeIf { it.isNotEmpty() }?.let { newItems ->
+            insertSourcesIfAbsent(
+                newItems.map {
+                    MediaSourceEntity(
+                        sourceKey = it.id,
+                        mediaItemId = it.id,
+                        kind = SourceKind.DRIVE,
+                        libraryRootId = libraryRootId,
+                        lastSeenAt = seenAt
+                    )
+                }
+            )
+        }
         crawled.map { it.id }.chunked(500).forEach { keys ->
             markSourcesAvailable(keys, libraryRootId, seenAt)
+        }
+        fileInfo.forEach { (fileId, info) ->
+            // updateFileInfo keeps a stored value where Drive says nothing (null), so only a new non-null value changes the row.
+            val source = storedSources[fileId]
+            val changes = source == null ||
+                (info.sizeBytes != null && info.sizeBytes != source.sizeBytes) ||
+                (info.widthPx != null && info.widthPx != source.widthPx) ||
+                (info.heightPx != null && info.heightPx != source.heightPx) ||
+                (info.durationMs != null && info.durationMs != source.durationMs) ||
+                (info.container != null && info.container != source.container)
+            if (changes) updateFileInfo(fileId, info.sizeBytes, info.widthPx, info.heightPx, info.durationMs, info.container)
         }
         refreshVisibilityFromSources()
     }

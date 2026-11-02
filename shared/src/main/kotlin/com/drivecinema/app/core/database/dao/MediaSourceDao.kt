@@ -11,6 +11,7 @@ import com.drivecinema.app.core.database.entity.MediaType
 import com.drivecinema.app.core.database.entity.PendingMatchEntity
 import com.drivecinema.app.core.database.entity.PlaybackProgressEntity
 import com.drivecinema.app.core.database.entity.SeriesEntity
+import com.drivecinema.app.core.database.entity.SourceKind
 import kotlinx.coroutines.flow.Flow
 
 /** A watched catalog title with its latest progress across all copies (input for Continue Watching). */
@@ -101,6 +102,33 @@ interface MediaSourceDao {
     """)
     fun getWatchHistoryFlow(): Flow<List<WatchHistoryRow>>
 
+    // ---- Technical details per copy (Task L.3) ----
+
+    /** What the player reported while playing this copy; a null leaves the stored value. */
+    @Query("""
+        UPDATE media_sources SET
+            widthPx = COALESCE(:widthPx, widthPx), heightPx = COALESCE(:heightPx, heightPx),
+            durationMs = COALESCE(:durationMs, durationMs), videoCodec = COALESCE(:videoCodec, videoCodec),
+            audioCodec = COALESCE(:audioCodec, audioCodec), audioChannels = COALESCE(:audioChannels, audioChannels),
+            frameRate = COALESCE(:frameRate, frameRate), isHdr = COALESCE(:isHdr, isHdr)
+        WHERE sourceKey = :sourceKey
+    """)
+    suspend fun updatePlayedTech(
+        sourceKey: String, widthPx: Int?, heightPx: Int?, durationMs: Long?, videoCodec: String?,
+        audioCodec: String?, audioChannels: Int?, frameRate: Float?, isHdr: Boolean?
+    )
+
+    /** The available copies of a title (details screen: one info line per copy). */
+    @Query("SELECT * FROM media_sources WHERE mediaItemId = :mediaItemId AND isAvailable = 1")
+    fun getAvailableSourcesForItemFlow(mediaItemId: String): Flow<List<MediaSourceEntity>>
+
+    /** The available copies of every episode of a series (episode rows: length + resolution). */
+    @Query("""
+        SELECT s.* FROM media_sources s INNER JOIN media_items m ON m.id = s.mediaItemId
+        WHERE m.seriesId = :seriesId AND s.isAvailable = 1
+    """)
+    fun getAvailableSourcesForSeriesFlow(seriesId: String): Flow<List<MediaSourceEntity>>
+
     // ---- Local library indexing (Task C.4 phase 2) ----
 
     @Query("SELECT * FROM media_items WHERE type = 'MOVIE'")
@@ -108,6 +136,16 @@ interface MediaSourceDao {
 
     @Query("SELECT * FROM series")
     suspend fun getAllSeriesRows(): List<SeriesEntity>
+
+    @Query("SELECT mediaItemId FROM media_sources WHERE sourceKey = :sourceKey LIMIT 1")
+    suspend fun sourceItemId(sourceKey: String): String?
+
+    @Query("UPDATE media_items SET seriesId = :seriesId WHERE id = :itemId")
+    suspend fun moveToSeries(itemId: String, seriesId: String)
+
+    /** Shows with at least one visible episode (the ones the library lists). */
+    @Query("SELECT DISTINCT seriesId FROM media_items WHERE type = 'EPISODE' AND isDeleted = 0 AND seriesId IS NOT NULL")
+    suspend fun getVisibleSeriesIds(): List<String>
 
     @Query("SELECT * FROM media_items WHERE type = 'EPISODE' AND seriesId = :seriesId")
     suspend fun getAllEpisodesOfSeries(seriesId: String): List<MediaItemEntity>
@@ -133,6 +171,17 @@ interface MediaSourceDao {
 
     @Query("UPDATE media_sources SET isAvailable = 0 WHERE kind = 'LOCAL' AND libraryRootId = :treeUri")
     suspend fun markLocalTreeUnavailable(treeUri: String)
+
+    @Query("UPDATE media_sources SET isAvailable = 0 WHERE kind = :kind AND libraryRootId = :treeUri")
+    suspend fun markTreeUnavailable(kind: SourceKind, treeUri: String)
+
+    /** Task I.2: a PC that can't be reached (or was removed): its copies stop being playable; rows are kept. */
+    @Query("UPDATE media_sources SET isAvailable = 0 WHERE kind = 'HOST' AND libraryRootId LIKE :hostTreePrefix || '%'")
+    suspend fun markHostUnavailable(hostTreePrefix: String)
+
+    /** Task I.2: folders the PC no longer shares. */
+    @Query("UPDATE media_sources SET isAvailable = 0 WHERE kind = 'HOST' AND libraryRootId LIKE :hostTreePrefix || '%' AND libraryRootId NOT IN (:sharedTreeUris)")
+    suspend fun markHostRootsOutsideUnavailable(hostTreePrefix: String, sharedTreeUris: List<String>)
 
     /** Local folders the user removed (or whose permission was revoked) stop being playable; rows are kept. */
     @Query("UPDATE media_sources SET isAvailable = 0 WHERE kind = 'LOCAL' AND (libraryRootId IS NULL OR libraryRootId NOT IN (:savedTreeUris))")

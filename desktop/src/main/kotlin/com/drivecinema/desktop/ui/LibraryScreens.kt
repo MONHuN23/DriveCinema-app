@@ -1,6 +1,18 @@
 package com.drivecinema.desktop.ui
 
 import androidx.compose.foundation.VerticalScrollbar
+import androidx.compose.foundation.HorizontalScrollbar
+import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListScope
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.rememberLazyListState
+import com.drivecinema.app.ui.design.DcButtonKind
+import com.drivecinema.app.ui.setup.SettingsLabels
+import com.drivecinema.desktop.ui.design.DesktopButton
+import com.drivecinema.desktop.browse.BrowseCard
+import com.drivecinema.desktop.browse.BrowseKind
+import com.drivecinema.desktop.browse.LibraryBrowse
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -21,6 +33,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
@@ -38,9 +51,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -50,7 +61,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -65,7 +75,6 @@ import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.drivecinema.app.core.database.dao.ContinueWatchingItem
@@ -73,8 +82,7 @@ import com.drivecinema.app.core.player.ContinueWatching
 import com.drivecinema.app.core.database.entity.MediaItemEntity
 import com.drivecinema.app.core.database.entity.PlaybackProgressEntity
 import com.drivecinema.app.core.database.entity.SeriesEntity
-import com.drivecinema.app.core.model.DriveFolder
-import com.drivecinema.app.core.model.FolderPickerSections
+import com.drivecinema.app.core.metadata.MediaInfoFormat
 import com.drivecinema.app.ui.player.PlaybackTimeUtils
 import com.drivecinema.app.ui.player.WatchState
 import com.drivecinema.desktop.browse.BrowseModels
@@ -90,35 +98,29 @@ import java.util.Locale
 /** Account shown in the Home top bar. */
 data class AccountInfo(val name: String, val email: String, val photoUrl: String?)
 
+/** Task L.1: the top bar shared by Home, Films and Series. [section] null = Home. */
+data class LibraryTopBar(
+    val library: LibraryState,
+    val account: AccountInfo?,
+    val section: BrowseKind?,
+    val onSection: (BrowseKind?) -> Unit,
+    val onSearch: () -> Unit,
+    val menu: AccountMenuActions
+)
+
+/** Home (Task L.1): Continue Watching, then a short row of films and one of series, each with "See all". */
 @Composable
 fun HomeScreen(
     content: HomeContent,
-    library: LibraryState,
-    account: AccountInfo?,
-    onSearch: () -> Unit,
-    onChangeFolder: () -> Unit,
-    onRefresh: () -> Unit,
-    onSignOut: (() -> Unit)?,
-    onOpenGuide: () -> Unit,
-    onLocalFolders: () -> Unit,
-    onOpenMovie: (MediaItemEntity) -> Unit,
-    onOpenSeries: (SeriesEntity) -> Unit,
-    onOpenContinue: (ContinueWatchingItem) -> Unit
+    top: LibraryTopBar,
+    listState: LazyListState,
+    onOpenCard: (BrowseKind, BrowseCard) -> Unit,
+    onOpenContinue: (ContinueWatchingItem) -> Unit,
+    onSeeAll: (BrowseKind) -> Unit
 ) {
-    val ready = library as? LibraryState.Ready
+    val ready = top.library as? LibraryState.Ready
     Column(Modifier.fillMaxSize().background(DesktopColors.Background)) {
-        TopBar(
-            ready = ready,
-            account = account,
-            onSearch = onSearch,
-            menu = AccountMenuActions(
-                onChangeFolder = onChangeFolder.takeIf { ready != null && !ready.isSyncing },
-                onRefresh = onRefresh.takeIf { ready != null && !ready.isSyncing },
-                onLocalFolders = onLocalFolders,
-                onOpenGuide = onOpenGuide,
-                onSignOut = onSignOut
-            )
-        )
+        TopBar(top)
         ready?.message?.let { Banner(it) }
 
         if (content.isEmpty) {
@@ -126,50 +128,105 @@ fun HomeScreen(
             return@Column
         }
 
-        val gridState = rememberLazyGridState()
         Box(Modifier.fillMaxSize()) {
-            LazyVerticalGrid(
-                columns = GridCells.Adaptive(POSTER_WIDTH),
-                state = gridState,
-                contentPadding = PaddingValues(start = 32.dp, end = 32.dp, bottom = 32.dp),
-                horizontalArrangement = Arrangement.spacedBy(16.dp),
-                verticalArrangement = Arrangement.spacedBy(20.dp),
+            LazyColumn(
+                state = listState,
+                contentPadding = PaddingValues(bottom = 32.dp),
+                verticalArrangement = Arrangement.spacedBy(28.dp),
                 modifier = Modifier.fillMaxSize()
             ) {
                 if (content.continueWatching.isNotEmpty()) {
-                    sectionHeader("Continue Watching")
-                    item(span = { GridItemSpan(maxLineSpan) }) {
-                        LazyRow(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                            items(content.continueWatching, key = { it.id }) { item ->
-                                ContinueCard(item, onClick = { onOpenContinue(item) })
+                    item(key = "continue") {
+                        Column {
+                            RowHeader("Continue Watching")
+                            ScrollingRow {
+                                items(content.continueWatching, key = { it.id }) { item ->
+                                    ContinueCard(item, onClick = { onOpenContinue(item) })
+                                }
                             }
                         }
                     }
                 }
-                if (content.movies.isNotEmpty()) {
-                    sectionHeader("Films")
-                    items(content.movies, key = { "m-${it.id}" }) { movie ->
-                        PosterCard(movie.title, movie.year, TmdbImages.poster(movie.posterPath)) { onOpenMovie(movie) }
-                    }
-                }
-                if (content.series.isNotEmpty()) {
-                    sectionHeader("Series")
-                    items(content.series, key = { "s-${it.id}" }) { series ->
-                        PosterCard(series.title, series.year, TmdbImages.poster(series.posterPath)) { onOpenSeries(series) }
+                BrowseKind.entries.forEach { kind ->
+                    val cards = content.cards(kind)
+                    if (cards.isNotEmpty()) {
+                        item(key = kind.name) {
+                            Column {
+                                RowHeader(kind.label, count = cards.size, onSeeAll = { onSeeAll(kind) })
+                                ScrollingRow {
+                                    items(cards.take(LibraryBrowse.HOME_ROW_LIMIT), key = { it.id }) { card ->
+                                        PosterCard(card, Modifier.width(POSTER_WIDTH)) { onOpenCard(kind, card) }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
             VerticalScrollbar(
-                adapter = rememberScrollbarAdapter(gridState),
+                adapter = rememberScrollbarAdapter(listState),
                 modifier = Modifier.align(Alignment.CenterEnd).fillMaxHeight()
             )
         }
     }
 }
 
-private val POSTER_WIDTH = 160.dp
+internal val POSTER_WIDTH = 160.dp
+private val RatingStar = Color(0xFFFFC107)
+internal val WatchedGreen = Color(0xFF66BB6A)
 
-private fun LazyGridScope.sectionHeader(title: String) {
+/** Title of a Home row; with [onSeeAll], the count and a "See all" link that opens the full view. */
+@Composable
+private fun RowHeader(title: String, count: Int? = null, onSeeAll: (() -> Unit)? = null) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.fillMaxWidth().padding(start = 32.dp, end = 32.dp, top = 16.dp, bottom = 12.dp)
+    ) {
+        Text(title, color = DesktopColors.TextPrimary, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+        count?.let {
+            Spacer(Modifier.width(10.dp))
+            Text(it.toString(), color = DesktopColors.TextSecondary, fontSize = 15.sp)
+        }
+        Spacer(Modifier.weight(1f))
+        onSeeAll?.let { open ->
+            val interaction = remember { MutableInteractionSource() }
+            val hovered by interaction.collectIsHoveredAsState()
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(50))
+                    .background(if (hovered) DesktopColors.SurfaceRaised else Color.Transparent)
+                    .hoverable(interaction)
+                    .pointerHoverIcon(PointerIcon.Hand)
+                    .clickable(onClick = open)
+                    .padding(start = 12.dp, end = 6.dp, top = 4.dp, bottom = 4.dp)
+            ) {
+                Text("See all", color = DesktopColors.TextPrimary, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                Icon(DesktopIcons.ChevronRight, contentDescription = null, tint = DesktopColors.TextPrimary, modifier = Modifier.size(20.dp))
+            }
+        }
+    }
+}
+
+/** A horizontal row with a scrollbar under it, so mouse users can scroll it without Shift+wheel. */
+@Composable
+private fun ScrollingRow(content: LazyListScope.() -> Unit) {
+    val rowState = rememberLazyListState()
+    Column {
+        LazyRow(
+            state = rowState,
+            contentPadding = PaddingValues(horizontal = 32.dp),
+            horizontalArrangement = Arrangement.spacedBy(16.dp),
+            content = content
+        )
+        HorizontalScrollbar(
+            adapter = rememberScrollbarAdapter(rowState),
+            modifier = Modifier.fillMaxWidth().padding(start = 32.dp, end = 32.dp, top = 6.dp)
+        )
+    }
+}
+
+internal fun LazyGridScope.sectionHeader(title: String) {
     item(span = { GridItemSpan(maxLineSpan) }) {
         Text(
             title,
@@ -186,161 +243,26 @@ data class AccountMenuActions(
     val onChangeFolder: (() -> Unit)?,
     val onRefresh: (() -> Unit)?,
     val onLocalFolders: () -> Unit,
+    /** Task I.1; only once a Drive library is chosen. */
+    val onImport: (() -> Unit)? = null,
+    /** Task I.2. */
+    val onSharing: (() -> Unit)? = null,
+    val onPcs: (() -> Unit)? = null,
+    /** Task R.3: the naming helper. */
+    val onNamingHelper: (() -> Unit)? = null,
     val onOpenGuide: () -> Unit,
-    val onSignOut: (() -> Unit)?
+    val onSignOut: (() -> Unit)?,
+    /** Milestone O: the "Skip intro" switch (null hides it); toggling keeps the menu open. */
+    val skipIntroEnabled: Boolean? = null,
+    val onToggleSkipIntro: () -> Unit = {},
+    /** Milestone Q: "Sync with my devices" (null hides it); [deviceSyncStatus] is shown under it. */
+    val deviceSyncEnabled: Boolean? = null,
+    val onToggleDeviceSync: () -> Unit = {},
+    val deviceSyncStatus: String? = null
 )
 
 @Composable
-private fun TopBar(
-    ready: LibraryState.Ready?,
-    account: AccountInfo?,
-    onSearch: () -> Unit,
-    menu: AccountMenuActions
-) {
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(16.dp),
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 32.dp, vertical = 18.dp)
-    ) {
-        Text("DriveCinema", color = DesktopColors.Accent, fontSize = 26.sp, fontWeight = FontWeight.Black)
-        ready?.let { FolderChip(it) }
-        Spacer(Modifier.weight(1f))
-        SearchPill(onSearch)
-        if (account != null) {
-            AccountPill(account, menu)
-        } else {
-            PillButton(onClick = menu.onOpenGuide) {
-                Text("Setup guide", color = DesktopColors.TextPrimary, fontSize = 14.sp)
-            }
-        }
-    }
-}
-
-@Composable
-private fun FolderChip(ready: LibraryState.Ready) {
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        modifier = Modifier
-            .clip(RoundedCornerShape(50))
-            .background(DesktopColors.Surface)
-            .padding(horizontal = 14.dp, vertical = 6.dp)
-    ) {
-        if (ready.isSyncing) {
-            CircularProgressIndicator(color = DesktopColors.Accent, strokeWidth = 2.dp, modifier = Modifier.size(14.dp))
-        } else {
-            Text("📁", fontSize = 13.sp)
-        }
-        Text(
-            if (ready.isSyncing) "${ready.folderName} · syncing…" else ready.folderName,
-            color = DesktopColors.TextSecondary,
-            fontSize = 13.sp
-        )
-    }
-}
-
-/** Rounded, borderless button with a subtle hover highlight. */
-@Composable
-private fun PillButton(onClick: () -> Unit, content: @Composable () -> Unit) {
-    val interaction = remember { MutableInteractionSource() }
-    val hovered by interaction.collectIsHoveredAsState()
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier
-            .clip(RoundedCornerShape(50))
-            .background(if (hovered) DesktopColors.SurfaceRaised else DesktopColors.Surface)
-            .hoverable(interaction)
-            .pointerHoverIcon(PointerIcon.Hand)
-            .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 8.dp)
-    ) { content() }
-}
-
-@Composable
-private fun SearchPill(onSearch: () -> Unit) {
-    PillButton(onClick = onSearch) {
-        Text("🔍", fontSize = 14.sp)
-        Spacer(Modifier.width(10.dp))
-        Text("Search films and series", color = DesktopColors.TextSecondary, fontSize = 14.sp)
-        Spacer(Modifier.width(24.dp))
-        Text(
-            "Ctrl+F",
-            color = DesktopColors.TextSecondary,
-            fontSize = 11.sp,
-            modifier = Modifier
-                .border(1.dp, DesktopColors.SurfaceRaised, RoundedCornerShape(4.dp))
-                .padding(horizontal = 6.dp, vertical = 2.dp)
-        )
-    }
-}
-
-@Composable
-private fun AccountPill(account: AccountInfo, menu: AccountMenuActions) {
-    var open by remember { mutableStateOf(false) }
-    Box {
-        val interaction = remember { MutableInteractionSource() }
-        val hovered by interaction.collectIsHoveredAsState()
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-            modifier = Modifier
-                .clip(RoundedCornerShape(50))
-                .background(if (hovered || open) DesktopColors.SurfaceRaised else DesktopColors.Surface)
-                .hoverable(interaction)
-                .pointerHoverIcon(PointerIcon.Hand)
-                .clickable { open = true }
-                .padding(start = 5.dp, end = 16.dp, top = 5.dp, bottom = 5.dp)
-        ) {
-            Avatar(account)
-            Column {
-                Text(account.name, color = DesktopColors.TextPrimary, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-                Text(account.email, color = DesktopColors.TextSecondary, fontSize = 11.sp)
-            }
-            Text("▾", color = DesktopColors.TextSecondary, fontSize = 12.sp)
-        }
-        DropdownMenu(
-            expanded = open,
-            onDismissRequest = { open = false },
-            offset = DpOffset(0.dp, 8.dp),
-            shape = RoundedCornerShape(12.dp),
-            containerColor = DesktopColors.Surface
-        ) {
-            fun pick(action: () -> Unit) { open = false; action() }
-            menu.onChangeFolder?.let { MenuEntry("📁", "Change library folder") { pick(it) } }
-            menu.onRefresh?.let { MenuEntry("↻", "Refresh library") { pick(it) } }
-            MenuEntry("💾", "Local folders") { pick(menu.onLocalFolders) }
-            MenuEntry("📖", "Setup guide") { pick(menu.onOpenGuide) }
-            menu.onSignOut?.let {
-                HorizontalDivider(color = DesktopColors.SurfaceRaised, modifier = Modifier.padding(vertical = 4.dp))
-                MenuEntry("⎋", "Sign out", color = DesktopColors.Accent) { pick(it) }
-            }
-        }
-    }
-}
-
-@Composable
-private fun MenuEntry(icon: String, label: String, color: Color = DesktopColors.TextPrimary, onClick: () -> Unit) {
-    DropdownMenuItem(
-        text = { Text(label, color = color, fontSize = 14.sp) },
-        leadingIcon = { Text(icon, color = color, fontSize = 15.sp) },
-        onClick = onClick,
-        modifier = Modifier.width(240.dp).pointerHoverIcon(PointerIcon.Hand)
-    )
-}
-
-@Composable
-private fun Avatar(account: AccountInfo) {
-    Box(
-        Modifier.size(36.dp).clip(CircleShape).background(DesktopColors.Focus),
-        contentAlignment = Alignment.Center
-    ) {
-        Text(account.name.take(1).uppercase(), color = Color.White, fontWeight = FontWeight.Bold)
-        account.photoUrl?.let { RemoteImage(it, account.name, Modifier.fillMaxSize()) }
-    }
-}
-
-@Composable
-private fun Banner(message: String) {
+internal fun Banner(message: String) {
     Text(
         message,
         color = DesktopColors.TextPrimary,
@@ -378,12 +300,46 @@ private fun EmptyLibrary(ready: LibraryState.Ready?) {
     }
 }
 
+/**
+ * Poster with watch badges (Task L.1): a check when watched, a progress bar for a started film, and
+ * "3 of 10 watched" under a series.
+ */
 @Composable
-private fun PosterCard(title: String, year: Int?, posterUrl: String?, onClick: () -> Unit) {
+internal fun PosterCard(card: BrowseCard, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    val subtitle = listOfNotNull(card.year?.toString(), LibraryBrowse.seriesProgressLabel(card)).joinToString(" · ").ifEmpty { null }
+    PosterCard(card.title, subtitle, TmdbImages.poster(card.posterPath), modifier, onClick) {
+        if (card.watchState == WatchState.WATCHED) {
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier.align(Alignment.TopEnd).padding(8.dp).size(28.dp).clip(CircleShape).background(Color(0xCC000000))
+            ) {
+                Icon(DesktopIcons.CheckCircle, contentDescription = "Watched", tint = WatchedGreen, modifier = Modifier.size(22.dp))
+            }
+        }
+        if (card.progress > 0f) {
+            LinearProgressIndicator(
+                progress = { card.progress },
+                color = DesktopColors.Accent,
+                trackColor = Color(0x66000000),
+                modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(4.dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun PosterCard(
+    title: String,
+    subtitle: String?,
+    posterUrl: String?,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+    overlay: @Composable BoxScope.() -> Unit = {}
+) {
     val interaction = remember { MutableInteractionSource() }
     val hovered by interaction.collectIsHoveredAsState()
     Column(
-        Modifier
+        modifier
             .hoverable(interaction)
             .pointerHoverIcon(PointerIcon.Hand)
             .clickable(onClick = onClick)
@@ -406,10 +362,11 @@ private fun PosterCard(title: String, year: Int?, posterUrl: String?, onClick: (
                     modifier = Modifier.align(Alignment.Center).padding(12.dp)
                 )
             }
+            overlay()
         }
         Spacer(Modifier.height(6.dp))
         Text(title, color = DesktopColors.TextPrimary, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        year?.let { Text(it.toString(), color = DesktopColors.TextSecondary, fontSize = 12.sp) }
+        subtitle?.let { Text(it, color = DesktopColors.TextSecondary, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) }
     }
 }
 
@@ -470,10 +427,11 @@ fun MovieDetailsScreen(
         posterUrl = TmdbImages.poster(movie.posterPath),
         facts = listOfNotNull(
             movie.year?.toString(),
-            BrowseModels.formatRuntime(movie.runtimeSeconds),
-            movie.voteAverage?.takeIf { it > 0 }?.let { "★ " + String.format(Locale.US, "%.1f", it) }
+            BrowseModels.formatRuntime(movie.runtimeSeconds)
         ),
+        rating = movie.voteAverage,
         genres = movie.genres,
+        infoLines = details.sources.mapNotNull { MediaInfoFormat.infoLine(it) },
         overview = movie.overview,
         onBack = onBack
     ) {
@@ -483,7 +441,11 @@ fun MovieDetailsScreen(
                 onClick = { onPlay(false) },
                 colors = ButtonDefaults.buttonColors(containerColor = DesktopColors.Accent)
             ) {
-                Text(if (resume != null) "▶  Resume from ${PlaybackTimeUtils.formatTime(resume)}" else "▶  Play", fontWeight = FontWeight.Bold)
+                ButtonLabel(
+                    DesktopIcons.PlayArrow,
+                    if (resume != null) "Resume from ${PlaybackTimeUtils.formatTime(resume)}" else "Play",
+                    bold = true
+                )
             }
             if (resume != null) {
                 OutlinedButton(onClick = { onPlay(true) }) { Text("Start over", color = DesktopColors.TextPrimary) }
@@ -496,7 +458,9 @@ fun MovieDetailsScreen(
 fun SeriesDetailsScreen(
     details: SeriesDetails?,
     onPlayEpisode: (MediaItemEntity) -> Unit,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    /** Task R.3: the series' Naming check; null hides the button. No badge yet (Task R.6). */
+    onNamingCheck: (() -> Unit)? = null
 ) {
     if (details == null) {
         LoadingOrMissing(onBack)
@@ -510,13 +474,23 @@ fun SeriesDetailsScreen(
         posterUrl = TmdbImages.poster(series.posterPath),
         facts = listOfNotNull(
             series.year?.toString(),
-            "${details.seasons.size} season${if (details.seasons.size == 1) "" else "s"}",
-            series.voteAverage?.takeIf { it > 0 }?.let { "★ " + String.format(Locale.US, "%.1f", it) }
+            "${details.seasons.size} season${if (details.seasons.size == 1) "" else "s"}"
         ),
+        rating = series.voteAverage,
         genres = series.genres,
         overview = series.overview,
         onBack = onBack
     ) {
+        if (onNamingCheck != null) {
+            DesktopButton(
+                SettingsLabels.NAMING_CHECK,
+                onClick = onNamingCheck,
+                kind = DcButtonKind.Secondary,
+                icon = DesktopIcons.InsertDriveFile,
+                small = true
+            )
+            Spacer(Modifier.height(16.dp))
+        }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             details.seasons.keys.forEach { season ->
                 val selected = season == selectedSeason
@@ -531,14 +505,19 @@ fun SeriesDetailsScreen(
         Spacer(Modifier.height(16.dp))
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             details.seasons[selectedSeason].orEmpty().forEach { episode ->
-                EpisodeRow(episode, details.progress[episode.id], onPlay = { onPlayEpisode(episode) })
+                EpisodeRow(
+                    episode,
+                    details.progress[episode.id],
+                    info = details.sources[episode.id]?.let { MediaInfoFormat.shortLine(it) },
+                    onPlay = { onPlayEpisode(episode) }
+                )
             }
         }
     }
 }
 
 @Composable
-private fun EpisodeRow(episode: MediaItemEntity, progress: PlaybackProgressEntity?, onPlay: () -> Unit) {
+private fun EpisodeRow(episode: MediaItemEntity, progress: PlaybackProgressEntity?, info: String?, onPlay: () -> Unit) {
     // Milestone J.1: watched rows are dimmed and labelled; started rows show the time left and a thin bar.
     val watched = progress?.isCompleted == true
     val watchLabel = progress?.let { WatchState.label(it.positionMs, it.durationMs, it.isCompleted) }
@@ -559,23 +538,35 @@ private fun EpisodeRow(episode: MediaItemEntity, progress: PlaybackProgressEntit
             "E${episode.episodeNumber ?: "?"}",
             color = if (watched) DesktopColors.TextSecondary else DesktopColors.Accent,
             fontWeight = FontWeight.Bold,
-            modifier = Modifier.width(48.dp)
+            maxLines = 1,
+            softWrap = false,
+            // Wider for running numbers: "E1141" ran into the title in 48 dp (F-48).
+            modifier = Modifier.widthIn(min = 48.dp).padding(end = 8.dp)
         )
         Column(Modifier.weight(1f)) {
-            Text(
-                episode.title,
-                color = if (watched) DesktopColors.TextSecondary else DesktopColors.TextPrimary,
-                fontSize = 15.sp,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            if (watchLabel != null) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    watchLabel,
-                    color = if (watched) Color(0xFF66BB6A) else DesktopColors.Accent,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.SemiBold
+                    episode.title,
+                    color = if (watched) DesktopColors.TextSecondary else DesktopColors.TextPrimary,
+                    fontSize = 15.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false)
                 )
+                // Task L.3: "48 min · 1080p" when known.
+                info?.let {
+                    Spacer(Modifier.width(12.dp))
+                    Text(it, color = DesktopColors.TextSecondary, fontSize = 12.sp, maxLines = 1)
+                }
+            }
+            if (watched) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(DesktopIcons.CheckCircle, contentDescription = null, tint = WatchedGreen, modifier = Modifier.size(14.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Watched", color = WatchedGreen, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                }
+            } else if (watchLabel != null) {
+                Text(watchLabel, color = DesktopColors.Accent, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
             }
             if (progress != null && !watched && progress.positionMs > 0) {
                 LinearProgressIndicator(
@@ -589,7 +580,13 @@ private fun EpisodeRow(episode: MediaItemEntity, progress: PlaybackProgressEntit
                 Text(it, color = DesktopColors.TextSecondary, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
             }
         }
-        Text("▶", color = DesktopColors.TextPrimary, fontSize = 18.sp)
+        Spacer(Modifier.width(12.dp))
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier.size(40.dp).clip(CircleShape).background(if (hovered) DesktopColors.Accent else DesktopColors.SurfaceRaised)
+        ) {
+            Icon(DesktopIcons.PlayArrow, contentDescription = "Play", tint = Color.White, modifier = Modifier.size(24.dp))
+        }
     }
 }
 
@@ -599,9 +596,13 @@ private fun DetailsLayout(
     backdropUrl: String?,
     posterUrl: String?,
     facts: List<String>,
+    /** TMDB rating, shown with a star; hidden when missing or 0. */
+    rating: Double?,
     genres: String?,
     overview: String?,
     onBack: () -> Unit,
+    /** Task L.3: one technical line per copy ("2 h 12 min · 2160p · HEVC · … · Drive"). */
+    infoLines: List<String> = emptyList(),
     actions: @Composable () -> Unit
 ) {
     val scroll = rememberScrollState()
@@ -621,13 +622,33 @@ private fun DetailsLayout(
                 }
                 Column(Modifier.weight(1f).padding(top = 100.dp)) {
                     Text(title, color = DesktopColors.TextPrimary, fontSize = 34.sp, fontWeight = FontWeight.Bold)
-                    if (facts.isNotEmpty()) {
+                    val shownRating = rating?.takeIf { it > 0 }
+                    if (facts.isNotEmpty() || shownRating != null) {
                         Spacer(Modifier.height(8.dp))
-                        Text(facts.joinToString("   ·   "), color = DesktopColors.TextSecondary, fontSize = 15.sp)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            val separator = "   ·   "
+                            Text(facts.joinToString(separator), color = DesktopColors.TextSecondary, fontSize = 15.sp)
+                            shownRating?.let {
+                                if (facts.isNotEmpty()) Text(separator, color = DesktopColors.TextSecondary, fontSize = 15.sp)
+                                Icon(DesktopIcons.Star, contentDescription = "Rating", tint = RatingStar, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text(String.format(Locale.US, "%.1f", it), color = DesktopColors.TextPrimary, fontSize = 15.sp)
+                            }
+                        }
                     }
                     genres?.takeIf { it.isNotBlank() }?.let {
                         Spacer(Modifier.height(4.dp))
                         Text(it, color = DesktopColors.TextSecondary, fontSize = 13.sp)
+                    }
+                    if (infoLines.isNotEmpty()) {
+                        Spacer(Modifier.height(10.dp))
+                        infoLines.forEach { line ->
+                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 2.dp)) {
+                                Icon(DesktopIcons.Info, contentDescription = null, tint = DesktopColors.TextSecondary, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(8.dp))
+                                Text(line, color = DesktopColors.TextSecondary, fontSize = 13.sp)
+                            }
+                        }
                     }
                     Spacer(Modifier.height(20.dp))
                     actions()
@@ -655,10 +676,7 @@ private fun LoadingOrMissing(onBack: () -> Unit) {
 @Composable
 private fun BackButtonOverlay(onBack: () -> Unit) {
     Box(Modifier.padding(24.dp)) {
-        OutlinedButton(
-            onClick = onBack,
-            colors = ButtonDefaults.outlinedButtonColors(containerColor = Color(0x990C0D10))
-        ) { Text("←  Back  (Esc)", color = DesktopColors.TextPrimary) }
+        BackButton(onBack, containerColor = Color(0x990C0D10))
     }
 }
 
@@ -677,7 +695,7 @@ fun SearchScreen(
     LaunchedEffect(Unit) { focus.requestFocus() }
     Column(Modifier.fillMaxSize().background(DesktopColors.Background).padding(32.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-            OutlinedButton(onClick = onBack) { Text("←  Back", color = DesktopColors.TextPrimary) }
+            BackButton(onBack)
             OutlinedTextField(
                 value = query,
                 onValueChange = onQueryChange,
@@ -704,13 +722,13 @@ fun SearchScreen(
                 if (results.movies.isNotEmpty()) {
                     sectionHeader("Films")
                     items(results.movies, key = { "m-${it.id}" }) { movie ->
-                        PosterCard(movie.title, movie.year, TmdbImages.poster(movie.posterPath)) { onOpenMovie(movie) }
+                        PosterCard(movie.title, movie.year?.toString(), TmdbImages.poster(movie.posterPath), onClick = { onOpenMovie(movie) })
                     }
                 }
                 if (results.series.isNotEmpty()) {
                     sectionHeader("Series")
                     items(results.series, key = { "s-${it.id}" }) { series ->
-                        PosterCard(series.title, series.year, TmdbImages.poster(series.posterPath)) { onOpenSeries(series) }
+                        PosterCard(series.title, series.year?.toString(), TmdbImages.poster(series.posterPath), onClick = { onOpenSeries(series) })
                     }
                 }
             }
@@ -727,93 +745,6 @@ fun DiscoveringScreen() {
             CircularProgressIndicator(color = DesktopColors.Accent)
             Spacer(Modifier.height(16.dp))
             Text("Looking for your \"Streaming\" folder…", color = DesktopColors.TextPrimary, fontSize = 16.sp)
-        }
-    }
-}
-
-@Composable
-fun FolderPickerScreen(
-    state: LibraryState.ChoosingFolder,
-    onChoose: (DriveFolder) -> Unit,
-    onCancel: () -> Unit,
-    onRetry: () -> Unit
-) {
-    val scroll = rememberScrollState()
-    Box(Modifier.fillMaxSize().background(DesktopColors.Background), contentAlignment = Alignment.TopCenter) {
-        Column(Modifier.width(640.dp).padding(vertical = 40.dp).verticalScroll(scroll)) {
-            Text("Choose your library folder", color = DesktopColors.TextPrimary, fontSize = 26.sp, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(6.dp))
-            Text(
-                "Pick the Drive folder that holds \"Films\" and/or \"Series\". A folder named \"Streaming\" is recommended.",
-                color = DesktopColors.TextSecondary,
-                fontSize = 14.sp
-            )
-            state.errorMessage?.let {
-                Spacer(Modifier.height(16.dp))
-                Banner(it)
-            }
-            Spacer(Modifier.height(20.dp))
-            when {
-                state.switchingTo != null -> Row(verticalAlignment = Alignment.CenterVertically) {
-                    CircularProgressIndicator(color = DesktopColors.Accent, strokeWidth = 2.dp, modifier = Modifier.size(20.dp))
-                    Spacer(Modifier.width(12.dp))
-                    Text("Reading \"${state.switchingTo}\"… this can take a moment for big libraries.", color = DesktopColors.TextPrimary)
-                }
-                state.isLoading -> CircularProgressIndicator(color = DesktopColors.Accent)
-                state.sections.isEmpty -> {
-                    Text("No folders found in your Drive.", color = DesktopColors.TextSecondary)
-                    Spacer(Modifier.height(12.dp))
-                    OutlinedButton(onClick = onRetry) { Text("Try again", color = DesktopColors.TextPrimary) }
-                }
-                else -> {
-                    FolderSection("YOUR DRIVE", state.sections.mine, onChoose)
-                    FolderSection("SHARED WITH YOU", state.sections.shared, onChoose)
-                }
-            }
-            if (state.canCancel && state.switchingTo == null) {
-                Spacer(Modifier.height(24.dp))
-                OutlinedButton(onClick = onCancel) { Text("Cancel", color = DesktopColors.TextPrimary) }
-            }
-        }
-    }
-}
-
-@Composable
-private fun FolderSection(title: String, folders: List<DriveFolder>, onChoose: (DriveFolder) -> Unit) {
-    if (folders.isEmpty()) return
-    Text(title, color = DesktopColors.TextSecondary, fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 12.dp, bottom = 6.dp))
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        folders.forEach { folder ->
-            val interaction = remember { MutableInteractionSource() }
-            val hovered by interaction.collectIsHoveredAsState()
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(if (hovered) DesktopColors.SurfaceRaised else DesktopColors.Surface)
-                    .hoverable(interaction)
-                    .pointerHoverIcon(PointerIcon.Hand)
-                    .clickable { onChoose(folder) }
-                    .padding(horizontal = 16.dp, vertical = 12.dp)
-            ) {
-                Text("📁", fontSize = 18.sp)
-                Spacer(Modifier.width(12.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(folder.name, color = DesktopColors.TextPrimary, fontSize = 15.sp)
-                    if (!folder.ownedByMe && folder.ownerName != null) {
-                        Text("Shared by ${folder.ownerName}", color = DesktopColors.TextSecondary, fontSize = 12.sp)
-                    }
-                }
-                if (FolderPickerSections.isRecommended(folder)) {
-                    Text(
-                        "Recommended",
-                        color = Color.White,
-                        fontSize = 11.sp,
-                        modifier = Modifier.background(DesktopColors.Accent, RoundedCornerShape(4.dp)).padding(horizontal = 8.dp, vertical = 2.dp)
-                    )
-                }
-            }
         }
     }
 }

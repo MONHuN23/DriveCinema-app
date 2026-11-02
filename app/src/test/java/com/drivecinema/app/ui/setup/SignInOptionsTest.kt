@@ -34,11 +34,30 @@ class SignInOptionsTest {
     }
 
     @Test
-    fun tvWithPlayServicesIsUnchanged() {
+    fun tvWithPlayServicesAlsoSignsInByPairing() {
+        // Task J.6: Google refuses Play Services sign-in on the TV for this app, so the button is hidden with a reason.
         val options = SignInOptions.forDevice(isTv = true, playServicesAvailable = true)
-        assertTrue(options.showGoogleSignIn)
-        assertFalse(options.pairingIsPrimary)
-        assertNull(options.notice)
+        assertFalse(options.showGoogleSignIn)
+        assertTrue(options.pairingIsPrimary)
+        assertEquals(SignInOptions.TV_GOOGLE_SIGN_IN_UNAVAILABLE_NOTICE, options.notice)
+    }
+
+    @Test
+    fun tvScreenWithPlayServicesHidesGoogleAndExplainsWhy() {
+        composeTestRule.setContent {
+            SignInScreen(
+                isLoading = false,
+                onSignInClick = {},
+                onPairingClick = {},
+                pairingButtonText = "Pair with Phone",
+                onOpenGuideClick = {},
+                options = SignInOptions.forDevice(isTv = true, playServicesAvailable = true)
+            )
+        }
+
+        composeTestRule.onAllNodesWithText("Sign in with Google").assertCountEquals(0)
+        composeTestRule.onNodeWithText(SignInOptions.TV_GOOGLE_SIGN_IN_UNAVAILABLE_NOTICE).assertIsDisplayed()
+        composeTestRule.onNodeWithText("Pair with Phone").assertIsDisplayed()
     }
 
     @Test
@@ -71,7 +90,7 @@ class SignInOptionsTest {
 
     @Test
     fun initialFocusGoesToFirstShownButton() {
-        val withGoogle = SignInOptions.forDevice(isTv = true, playServicesAvailable = true)
+        val withGoogle = SignInOptions.forDevice(isTv = false, playServicesAvailable = true)
         val pairingOnly = SignInOptions.forDevice(isTv = true, playServicesAvailable = false)
 
         assertEquals(SignInFocusTarget.GOOGLE, withGoogle.initialFocus(hasPairing = true, hasGuide = true))
@@ -81,19 +100,20 @@ class SignInOptionsTest {
     }
 
     @Test
-    fun screenWithPlayServicesShowsGoogleSignInWithoutNotice() {
+    fun phoneScreenShowsGoogleSignInWithoutNotice() {
         composeTestRule.setContent {
             SignInScreen(
                 isLoading = false,
                 onSignInClick = {},
                 onPairingClick = {},
                 pairingButtonText = "Pair with Phone",
-                options = SignInOptions.forDevice(isTv = true, playServicesAvailable = true)
+                options = SignInOptions.forDevice(isTv = false, playServicesAvailable = true)
             )
         }
 
         composeTestRule.onNodeWithText("Sign in with Google").assertIsDisplayed()
         composeTestRule.onAllNodesWithText(SignInOptions.NO_PLAY_SERVICES_NOTICE).assertCountEquals(0)
+        composeTestRule.onAllNodesWithText(SignInOptions.TV_GOOGLE_SIGN_IN_UNAVAILABLE_NOTICE).assertCountEquals(0)
     }
 
     @Test

@@ -1,5 +1,6 @@
 package com.drivecinema.app.core.sync
 
+import com.drivecinema.app.core.logging.Perf
 import com.drivecinema.app.core.network.FolderValidationResult
 
 /** Outcome of a manual "Refresh library" (Task H.1). */
@@ -19,7 +20,7 @@ class LibraryRefresher(
 ) {
     suspend fun refresh(rootFolderId: String, accessToken: String?): LibraryRefreshResult {
         if (accessToken.isNullOrEmpty()) return LibraryRefreshResult.Failed(OFFLINE_MESSAGE)
-        val validation = validateFolder(rootFolderId, accessToken).getOrElse {
+        val validation = Perf.measure("sync.folderCheck") { validateFolder(rootFolderId, accessToken) }.getOrElse {
             return LibraryRefreshResult.Failed(OFFLINE_MESSAGE)
         }
         if (validation is FolderValidationResult.Invalid) {

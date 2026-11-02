@@ -9,6 +9,9 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
+import com.drivecinema.app.core.database.DriveCinemaDatabase
+import com.drivecinema.app.core.database.closeInstanceForTests
+import org.junit.After
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -20,6 +23,9 @@ import org.robolectric.annotation.SQLiteMode
 @Config(sdk = [34])
 @SQLiteMode(SQLiteMode.Mode.NATIVE)
 class RemoteKeyMapperTest {
+
+    @After
+    fun closeDatabase() = DriveCinemaDatabase.closeInstanceForTests()
 
     @Test
     fun existingMediaKeysKeepTheirBehaviour() {
@@ -41,6 +47,15 @@ class RemoteKeyMapperTest {
     fun nextKeyOnlyActsWhenThereIsANextEpisode() {
         assertEquals(PlayerKeyAction.NextEpisode, RemoteKeyMapper.mediaAction(KeyEvent.KEYCODE_MEDIA_NEXT, hasNextEpisode = true))
         assertNull(RemoteKeyMapper.mediaAction(KeyEvent.KEYCODE_MEDIA_NEXT, hasNextEpisode = false))
+    }
+
+    @Test
+    fun previousKeyOnlyActsWhenThereIsAPreviousEpisode() {
+        assertEquals(
+            PlayerKeyAction.PreviousEpisode,
+            RemoteKeyMapper.mediaAction(KeyEvent.KEYCODE_MEDIA_PREVIOUS, hasNextEpisode = false, hasPreviousEpisode = true)
+        )
+        assertNull(RemoteKeyMapper.mediaAction(KeyEvent.KEYCODE_MEDIA_PREVIOUS, hasNextEpisode = true, hasPreviousEpisode = false))
     }
 
     @Test

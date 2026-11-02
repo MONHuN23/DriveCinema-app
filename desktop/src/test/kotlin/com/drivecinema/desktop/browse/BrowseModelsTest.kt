@@ -7,6 +7,8 @@ import com.drivecinema.app.core.database.entity.MediaType
 import com.drivecinema.app.core.database.entity.SourceKind
 import com.drivecinema.app.core.database.entity.PlaybackProgressEntity
 import com.drivecinema.app.core.database.entity.SeriesEntity
+import com.drivecinema.app.ui.player.WatchState
+import com.drivecinema.app.core.metadata.MediaInfoFormat
 import com.drivecinema.desktop.library.DesktopDatabase
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
@@ -55,9 +57,42 @@ class BrowseModelsTest {
         db.playbackProgressDao().saveProgress(PlaybackProgressEntity("e2", 600_000, 3_000_000, lastWatchedAt = 3))
 
         val home = models.home().first()
-        assertEquals(listOf("Alien", "Dune Part Two"), home.movies.map { it.title })
+        assertEquals(listOf("Alien", "Dune Part Two"), home.films.map { it.title })
         assertEquals(listOf("Dark"), home.series.map { it.title })
         assertEquals(listOf("e2", "m-dune"), home.continueWatching.map { it.id })
+    }
+
+    @Test
+    fun cardsCarryWatchStateFromTheRealQueries() = runBlocking {
+        // Task L.1: film badges and "1 of 3 watched" for a series, from the shared queries (episode counts + history).
+        db.playbackProgressDao().saveProgress(PlaybackProgressEntity("m-dune", 9_960_000, 9_960_000, isCompleted = true, lastWatchedAt = 1))
+        db.playbackProgressDao().saveProgress(PlaybackProgressEntity("e1", 3_000_000, 3_000_000, isCompleted = true, lastWatchedAt = 2))
+        db.playbackProgressDao().saveProgress(PlaybackProgressEntity("e2", 600_000, 3_000_000, lastWatchedAt = 3))
+
+        val home = models.home().first()
+        val films = home.films.associateBy { it.id }
+        assertEquals(WatchState.WATCHED, films.getValue("m-dune").watchState)
+        assertEquals(WatchState.NOT_STARTED, films.getValue("m-alien").watchState)
+        val dark = home.series.single()
+        assertEquals(WatchState.IN_PROGRESS, dark.watchState)
+        assertEquals("1 of 3 watched", LibraryBrowse.seriesProgressLabel(dark))
+    }
+
+    @Test
+    fun movieDetailsShowWhatDriveAndThePlayerReportedPerCopy() = runBlocking {
+        // Task L.3: Drive's sync data first, then a play adds the codecs (a null from the player keeps Drive's value).
+        db.mediaDao().insertSourcesIfAbsent(listOf(MediaSourceEntity("m-dune", "m-dune", SourceKind.DRIVE)))
+        db.mediaDao().updateFileInfo("m-dune", 9_019_431_321, 3840, 1600, 9_960_000, "MKV")
+        assertEquals(
+            "2 h 46 min · 2160p · MKV · 8.4 GB · Drive",
+            MediaInfoFormat.infoLine(models.movie("m-dune").first()!!.sources.single())
+        )
+
+        db.mediaSourceDao().updatePlayedTech("m-dune", null, null, null, "HEVC", "E-AC-3", 6, 23.976f, null)
+        assertEquals(
+            "2 h 46 min · 2160p · HEVC · E-AC-3 5.1 · MKV · 8.4 GB · Drive",
+            MediaInfoFormat.infoLine(models.movie("m-dune").first()!!.sources.single())
+        )
     }
 
     @Test
